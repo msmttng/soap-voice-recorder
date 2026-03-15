@@ -430,13 +430,18 @@ const App = {
 
   async startRecording() {
     try {
-      // マイク録音開始（波形表示用）
+      // マイク録音開始（波形表示 + 音声バックアップ用）
       await this.recorder.start();
+      this.lastRecording = null; // 録音結果を保持するための変数
 
-      // リアルタイム音声認識も同時開始
-      SpeechTranscriber.start((final, interim) => {
-        this.updateLiveTranscript(final, interim);
-      });
+      // リアルタイム音声認識も同時開始（失敗しても録音は続行）
+      try {
+        SpeechTranscriber.start((final, interim) => {
+          this.updateLiveTranscript(final, interim);
+        });
+      } catch (speechErr) {
+        console.warn('[App] Speech API not available:', speechErr);
+      }
       
       // UI更新
       const btn = document.getElementById('recordBtn');
@@ -451,7 +456,7 @@ const App = {
       document.getElementById('liveTranscriptText').textContent = '🎤 音声を認識中...';
       
       this.startWaveformAnimation();
-      this.toast('🎙️ 録音 & リアルタイム文字起こし開始');
+      this.toast('🎙️ 録音開始');
     } catch (err) {
       this.toast(`❌ ${err.message}`, 'error');
     }
@@ -459,9 +464,15 @@ const App = {
 
   async stopRecording() {
     try {
-      // 録音と音声認識を停止
-      await this.recorder.stop();
-      const transcript = SpeechTranscriber.stop();
+      // 録音停止 → Blobを取得（Geminiフォールバック用に保持）
+      const recording = await this.recorder.stop();
+      this.lastRecording = recording;
+      
+      // 音声認識を停止して結果取得
+      let transcript = '';
+      try {
+        transcript = SpeechTranscriber.stop();
+      } catch(e) {}
       
       // UI復帰
       const btn = document.getElementById('recordBtn');
@@ -471,19 +482,152 @@ const App = {
       document.getElementById('recordLabel').textContent = 'タップして録音開始';
       document.getElementById('pauseBtn').classList.add('hidden');
       document.getElementById('recordTime').textContent = '00:00';
-      document.getElementById('liveTranscriptArea').classList.add('hidden');
       
       this.stopWaveformAnimation();
 
-      if (!transcript || transcript.trim().length === 0) {
-        this.toast('⚠️ 音声が認識されませんでした。もう一度録音してください。', 'error');
-        return;
+      // === 3段階フォールバック ===
+      if (transcript && transcript.trim().length > 0) {
+        // ✅ Stage 1: Speech API成功 → テキストでSOAP生成
+        document.getElementById('liveTranscriptArea').classList.add('hidden');
+        this.toast(`✅ 文字起こし完了（${transcript.length}文字）— SOAP生成中...`);
+        await this.processTranscript(transcript);
+      } else {
+        // Stage 2: Speech API失敗 → 手動入力 or Gemini音声送信を選択
+        console.log('[App] Speech API returned empty, showing options');
+        this.showTranscriptFallback(recording);
       }
-
-      this.toast(`✅ 文字起こし完了（${transcript.length}文字）— SOAP生成中...`);
-      await this.processTranscript(transcript);
     } catch (err) {
       this.toast(`❌ ${err.message}`, 'error');
+    }
+  },
+
+  /**
+   * Speech API失敗時のフォールバックUI
+   */
+  showTranscriptFallback(recording) {
+    const liveArea = document.getElementById('liveTranscriptArea');
+    liveArea.classList.remove('hidden');
+    liveArea.innerHTML = `
+      <div class="card-header">
+        <span class="card-icon">⚠️</span>
+        <h2>音声認識がテキストを取得できませんでした</h2>
+      </div>
+      <p style="font-size:13px; color:var(--text-secondary); margin-bottom:12px;">
+        以下のいずれかの方法で進めてください：
+      </p>
+      <div style="margin-bottom:12px;">
+        <label style="font-size:13px; font-weight:500; color:var(--text-primary); display:block; margin-bottom:6px;">
+          ✍️ 方法1: 会話内容を手入力
+        </label>
+        <textarea id="manualTranscript" rows="4" style="width:100%; background:var(--bg-input); border:1px solid rgba(255,255,255,0.08); border-radius:8px; padding:12px; color:var(--text-primary); font-family:var(--font-main); font-size:14px; resize:vertical;" 
+          placeholder="患者との会話の要点を入力してください&#10;例: 患者「最近血圧が高くて...」&#10;薬剤師「お薬はちゃんと飲めていますか？」"></textarea>
+      </div>
+      <button id="submitManualBtn" class="action-btn primary-btn" style="margin-bottom:8px;">
+        ✍️ この内容でSOAP生成
+      </button>
+      <button id="submitAudioBtn" class="action-btn secondary-btn" style="margin-bottom:8px;">
+        🤖 録音音声をAIに送信（API制限注意）
+      </button>
+      <button id="cancelFallbackBtn" class="action-btn tertiary-btn">
+        ← やり直す
+      </button>
+    `;
+
+    // 手動入力でSOAP生成
+    document.getElementById('submitManualBtn').addEventListener('click', async () => {
+      const text = document.getElementById('manualTranscript').value.trim();
+      if (!text) {
+        this.toast('⚠️ テキストを入力してください', 'error');
+        return;
+      }
+      liveArea.classList.add('hidden');
+      this.toast('✅ テキストからSOAP生成中...');
+      await this.processTranscript(text);
+    });
+
+    // 音声ファイルをGemini送信（フォールバック）
+    document.getElementById('submitAudioBtn').addEventListener('click', async () => {
+      liveArea.classList.add('hidden');
+      this.toast('🤖 録音音声をAIに送信中...');
+      await this.processAudioFallback(recording);
+    });
+
+    // キャンセル
+    document.getElementById('cancelFallbackBtn').addEventListener('click', () => {
+      liveArea.classList.add('hidden');
+      // リセット
+      liveArea.innerHTML = `
+        <div class="card-header">
+          <span class="card-icon">📝</span>
+          <h2>リアルタイム文字起こし</h2>
+          <span style="font-size:11px; color:var(--success); margin-left:auto;">● LIVE</span>
+        </div>
+        <div id="liveTranscriptText" style="font-size:14px; line-height:1.7; color:var(--text-primary); max-height:150px; overflow-y:auto; white-space:pre-wrap;">
+          🎤 音声を認識中...
+        </div>
+      `;
+    });
+  },
+
+  /**
+   * 音声ファイルをGeminiに直接送信（フォールバック）
+   */
+  async processAudioFallback(recording) {
+    this.showScreen('soapScreen');
+    document.getElementById('processingIndicator').classList.remove('hidden');
+    document.getElementById('soapContent').classList.add('hidden');
+    document.getElementById('processingStatus').textContent = '音声データを準備中...';
+
+    try {
+      const audioBase64 = await AudioRecorder.blobToBase64(recording.blob);
+      document.getElementById('processingStatus').textContent = 'AIが音声を分析中...（15秒程度かかります）';
+      
+      const drugInfo = document.getElementById('drugInput').value.trim();
+      const settings = Config.load();
+      const apiKey = settings.geminiApiKey;
+      
+      if (!apiKey) throw new Error('APIキーが設定されていません');
+
+      // 音声送信用のリクエスト
+      const requestBody = {
+        contents: [{
+          parts: [
+            { inlineData: { mimeType: recording.mimeType, data: audioBase64 } },
+            { text: GeminiClient._buildPrompt('（音声データから文字起こしして以下の形式で出力してください）', drugInfo) }
+          ]
+        }],
+        generationConfig: {
+          temperature: 0.3, topP: 0.8, maxOutputTokens: 4096,
+          responseMimeType: 'application/json'
+        }
+      };
+
+      // モデルを順番に試行
+      let soapData = null;
+      for (const model of GeminiClient.MODELS) {
+        try {
+          soapData = await GeminiClient._callAPI(model, apiKey, requestBody);
+          break;
+        } catch (err) {
+          if (err.status === 429) {
+            document.getElementById('processingStatus').textContent = `${model} が制限中...5秒待って次のモデルを試行`;
+            await new Promise(r => setTimeout(r, 5000));
+          } else if (err.status === 403) throw err;
+        }
+      }
+
+      if (!soapData) throw new Error('すべてのモデルでAPI制限に達しました。数分待ってからお試しください。');
+
+      this.currentSOAP = soapData;
+      this.displaySOAP(soapData);
+      History.add({ summary: soapData.summary || '記録', drugs: drugInfo, soap: soapData });
+      this.renderHistory();
+
+    } catch (err) {
+      console.error('[App] Audio fallback failed:', err);
+      document.getElementById('processingIndicator').classList.add('hidden');
+      this.toast(`❌ ${err.message}`, 'error');
+      this.showScreen('recordScreen');
     }
   },
 
