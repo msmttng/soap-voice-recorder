@@ -345,6 +345,22 @@ const App = {
     document.querySelectorAll('.edit-btn').forEach(btn => {
       btn.addEventListener('click', () => this.toggleEdit(btn.dataset.target));
     });
+
+    // テキスト直接入力からSOAP生成
+    document.getElementById('generateFromTextBtn').addEventListener('click', () => this.generateFromText());
+  },
+
+  /**
+   * テキスト直接入力からSOAP生成
+   */
+  async generateFromText() {
+    const text = document.getElementById('manualTranscriptInput').value.trim();
+    if (!text) {
+      this.toast('⚠️ 会話内容を入力してください', 'error');
+      return;
+    }
+    this.toast('🧠 テキストからSOAP生成中...');
+    await this.processTranscript(text);
   },
 
   showScreen(screenId) {

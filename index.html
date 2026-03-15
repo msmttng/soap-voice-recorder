@@ -81,6 +81,19 @@
         </div>
       </section>
 
+      <!-- テキスト直接入力でSOAP生成 -->
+      <section class="card" style="border-color: rgba(52, 211, 153, 0.2);">
+        <div class="card-header">
+          <span class="card-icon">✍️</span>
+          <h2>テキストからSOAP生成</h2>
+        </div>
+        <textarea id="manualTranscriptInput" placeholder="会話内容を入力してください&#10;例:&#10;患者「最近血圧が高くて心配です」&#10;薬剤師「お薬はきちんと飲めていますか？」&#10;患者「朝はたまに忘れてしまいます」" rows="5" style="width:100%; background:var(--bg-input); border:1px solid rgba(255,255,255,0.08); border-radius:10px; padding:14px 16px; color:var(--text-primary); font-family:var(--font-main); font-size:14px; line-height:1.6; resize:vertical;"></textarea>
+        <p class="hint" style="margin-bottom:12px;">録音の代わりに、会話内容をテキストで入力できます</p>
+        <button id="generateFromTextBtn" class="action-btn primary-btn">
+          🧠 この内容でSOAP生成
+        </button>
+      </section>
+
       <!-- 録音履歴 -->
       <section class="card history-card">
         <div class="card-header">
