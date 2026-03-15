@@ -1,5 +1,5 @@
-// Service Worker — オフラインキャッシュ
-const CACHE_NAME = 'soap-recorder-v1';
+// Service Worker — ネットワーク優先キャッシュ v2
+const CACHE_NAME = 'soap-recorder-v2';
 const ASSETS = [
   '/',
   '/index.html',
@@ -13,10 +13,12 @@ self.addEventListener('install', (event) => {
   event.waitUntil(
     caches.open(CACHE_NAME).then(cache => cache.addAll(ASSETS))
   );
+  // 即座にアクティブ化
   self.skipWaiting();
 });
 
 self.addEventListener('activate', (event) => {
+  // 古いキャッシュを全て削除
   event.waitUntil(
     caches.keys().then(keys =>
       Promise.all(keys.filter(k => k !== CACHE_NAME).map(k => caches.delete(k)))
@@ -32,7 +34,15 @@ self.addEventListener('fetch', (event) => {
     return;
   }
   
+  // ネットワーク優先 → 失敗時のみキャッシュ利用
   event.respondWith(
-    caches.match(event.request).then(cached => cached || fetch(event.request))
+    fetch(event.request)
+      .then(response => {
+        // 最新を取得できたらキャッシュも更新
+        const clone = response.clone();
+        caches.open(CACHE_NAME).then(cache => cache.put(event.request, clone));
+        return response;
+      })
+      .catch(() => caches.match(event.request))
   );
 });
