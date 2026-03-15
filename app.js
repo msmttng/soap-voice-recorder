@@ -1,5 +1,10 @@
 /**
  * app.js — SOAP Voice Recorder メインアプリケーション
+ * 
+ * アーキテクチャ:
+ *   1. Web Speech API（ブラウザ内蔵・無料）でリアルタイム文字起こし
+ *   2. 文字起こしテキスト → Gemini API（テキストのみ）でSOAP生成
+ *   → 音声トークンを使わないため、API制限に引っかからない
  */
 
 // ==============================================
@@ -32,21 +37,111 @@ const Config = {
 };
 
 // ==============================================
-// Gemini API クライアント（直接呼び出し版）
+// リアルタイム音声認識（Web Speech API）
+// ==============================================
+const SpeechTranscriber = {
+  recognition: null,
+  isListening: false,
+  fullTranscript: '',       // 確定済みテキスト
+  interimTranscript: '',    // 認識中テキスト
+  onUpdate: null,           // コールバック
+
+  /**
+   * 音声認識を開始
+   */
+  start(onUpdate) {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      throw new Error('このブラウザは音声認識に対応していません。Chrome または Safari を使用してください。');
+    }
+
+    this.recognition = new SpeechRecognition();
+    this.recognition.lang = 'ja-JP';
+    this.recognition.continuous = true;
+    this.recognition.interimResults = true;
+    this.recognition.maxAlternatives = 1;
+
+    this.fullTranscript = '';
+    this.interimTranscript = '';
+    this.onUpdate = onUpdate;
+
+    this.recognition.onresult = (event) => {
+      let interim = '';
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const transcript = event.results[i][0].transcript;
+        if (event.results[i].isFinal) {
+          this.fullTranscript += transcript;
+          console.log('[Speech] Final:', transcript);
+        } else {
+          interim += transcript;
+        }
+      }
+      this.interimTranscript = interim;
+      
+      if (this.onUpdate) {
+        this.onUpdate(this.fullTranscript, this.interimTranscript);
+      }
+    };
+
+    this.recognition.onerror = (event) => {
+      console.warn('[Speech] Error:', event.error);
+      // 'no-speech' は無視（無音期間で発生する）
+      if (event.error === 'no-speech') return;
+      if (event.error === 'aborted') return;
+    };
+
+    this.recognition.onend = () => {
+      // continuous=true でも停止することがあるので自動再開
+      if (this.isListening) {
+        console.log('[Speech] Auto-restart');
+        try {
+          this.recognition.start();
+        } catch(e) {
+          console.warn('[Speech] Restart failed:', e);
+        }
+      }
+    };
+
+    this.recognition.start();
+    this.isListening = true;
+    console.log('[Speech] Started');
+  },
+
+  /**
+   * 音声認識を停止
+   */
+  stop() {
+    this.isListening = false;
+    if (this.recognition) {
+      this.recognition.stop();
+      this.recognition = null;
+    }
+    console.log('[Speech] Stopped');
+    return this.fullTranscript;
+  },
+
+  /**
+   * 現在のテキスト（確定 + 途中）
+   */
+  getCurrentText() {
+    return this.fullTranscript + this.interimTranscript;
+  }
+};
+
+// ==============================================
+// Gemini API クライアント（テキストのみ版）
 // ==============================================
 const GeminiClient = {
-  /**
-   * 音声ファイルからSOAPを生成
-   * GASを使わず、PWAから直接Gemini APIを呼び出す
-   */
-  // 使用するモデルの優先順位（音声対応・無料枠が大きい順）
   MODELS: [
     'gemini-2.0-flash',
     'gemini-1.5-flash',
     'gemini-2.0-flash-lite'
   ],
 
-  async generateSOAP(audioBase64, mimeType, drugInfo) {
+  /**
+   * テキストからSOAPを生成（音声トークン不要！）
+   */
+  async generateSOAP(transcript, drugInfo) {
     const settings = Config.load();
     const apiKey = settings.geminiApiKey;
 
@@ -54,21 +149,13 @@ const GeminiClient = {
       throw new Error('Gemini APIキーが設定されていません。設定画面でAPIキーを入力してください。');
     }
 
-    const systemPrompt = this._buildPrompt(drugInfo);
+    const systemPrompt = this._buildPrompt(transcript, drugInfo);
 
     const requestBody = {
       contents: [{
-        parts: [
-          {
-            inlineData: {
-              mimeType: mimeType,
-              data: audioBase64
-            }
-          },
-          {
-            text: systemPrompt
-          }
-        ]
+        parts: [{
+          text: systemPrompt
+        }]
       }],
       generationConfig: {
         temperature: 0.3,
@@ -78,37 +165,28 @@ const GeminiClient = {
       }
     };
 
-    // 各モデルを順番に試行（429エラー時にフォールバック）
+    // 各モデルを順番に試行
     let lastError = null;
     for (const model of this.MODELS) {
       try {
         console.log(`[Gemini] Trying model: ${model}`);
-        const result = await this._callGeminiAPI(model, apiKey, requestBody);
+        const result = await this._callAPI(model, apiKey, requestBody);
         console.log(`[Gemini] Success with model: ${model}`);
         return result;
       } catch (err) {
         console.warn(`[Gemini] ${model} failed:`, err.message);
         lastError = err;
-        
-        // 429（レート制限）の場合、次のモデルを試す前に少し待つ
         if (err.status === 429) {
-          console.log('[Gemini] Rate limited, waiting 3s before trying next model...');
           await new Promise(r => setTimeout(r, 3000));
           continue;
         }
-        // 403（キー無効）や他のエラーはそのまま投げる
         if (err.status === 403) throw err;
       }
     }
-
-    // 全モデル失敗した場合、最後のエラーを投げる
     throw lastError || new Error('すべてのAIモデルでエラーが発生しました');
   },
 
-  /**
-   * Gemini API 呼び出し（個別モデル）
-   */
-  async _callGeminiAPI(model, apiKey, requestBody) {
+  async _callAPI(model, apiKey, requestBody) {
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
 
     const response = await fetch(url, {
@@ -119,10 +197,10 @@ const GeminiClient = {
 
     if (!response.ok) {
       const error = await response.json().catch(() => ({}));
-      console.error(`[Gemini] ${model} API Error:`, error);
+      console.error(`[Gemini] ${model} Error:`, error);
       const err = new Error(
         response.status === 403 ? 'APIキーが無効です。設定画面で正しいキーを入力してください。' :
-        response.status === 429 ? `${model}: API制限に達しました。別モデルで再試行中...` :
+        response.status === 429 ? `${model}: レート制限。別モデルで再試行中...` :
         `Gemini APIエラー (${model}): ${error.error?.message || response.statusText}`
       );
       err.status = response.status;
@@ -131,34 +209,29 @@ const GeminiClient = {
 
     const data = await response.json();
     const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
-    
-    if (!text) {
-      throw new Error('AIからの応答が空でした。もう一度お試しください。');
-    }
+    if (!text) throw new Error('AIからの応答が空でした');
 
     try {
       return JSON.parse(text);
     } catch {
-      console.warn(`[Gemini] ${model} JSON parse failed, attempting extraction`);
       return this._extractSOAPFromText(text);
     }
   },
 
-  /**
-   * SOAP生成用プロンプト
-   */
-  _buildPrompt(drugInfo) {
+  _buildPrompt(transcript, drugInfo) {
     const drugSection = drugInfo 
       ? `\n\n## 処方薬情報（NSIPSから取得）\n${drugInfo}\nこの薬品情報を元に、A（薬学的評価）とP（指導計画）を具体的に提案してください。`
       : '';
 
     return `あなたは日本の保険薬局に勤務するベテラン薬剤師です。
-以下の音声は、薬剤師と患者の服薬指導時の会話です。
+以下は、薬剤師と患者の服薬指導時の会話を文字起こししたテキストです。
 
-この会話を聞き取り、以下の作業を行ってください：
-1. 会話を正確に文字起こしする
-2. 文字起こし結果をSOAP形式の薬歴に変換する
+## 会話テキスト
+${transcript}
 ${drugSection}
+
+## 指示
+上記の会話テキストをSOAP形式の薬歴に変換してください。
 
 ## SOAP記載ルール
 - S（主観的情報）: 患者自身の言葉による訴え、自覚症状、生活状況、服薬状況、副作用の有無
@@ -170,12 +243,11 @@ ${drugSection}
 - 日本語で出力すること
 - 医薬品名は正確に記載すること
 - 患者の発言はできるだけ原文に近い表現で記載すること
-- 推測や創作は行わないこと（会話に含まれない情報は記載しない）
+- 推測や創作は行わないこと
 
 ## 出力形式（JSON）
-以下のJSON形式で出力してください:
 {
-  "transcript": "文字起こし全文",
+  "transcript": "整形した会話テキスト",
   "S": "主観的情報",
   "O": "客観的情報",
   "A": "薬学的評価",
@@ -184,46 +256,27 @@ ${drugSection}
 }`;
   },
 
-  /**
-   * テキストからSOAP構造を抽出（フォールバック）
-   */
   _extractSOAPFromText(text) {
-    // JSONブロックがあればそれを抽出
     const jsonMatch = text.match(/```json\s*([\s\S]*?)```/) || text.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
       try {
-        const jsonStr = jsonMatch[1] || jsonMatch[0];
-        return JSON.parse(jsonStr);
+        return JSON.parse(jsonMatch[1] || jsonMatch[0]);
       } catch {}
     }
-
-    // フォールバック: プレーンテキストとして返す
     return {
       transcript: text,
       S: '（自動抽出に失敗しました。文字起こし全文を確認してください）',
-      O: '',
-      A: '',
-      P: '',
+      O: '', A: '', P: '',
       summary: '要確認'
     };
   },
 
-  /**
-   * 接続テスト
-   */
   async testConnection() {
     const settings = Config.load();
-    if (!settings.geminiApiKey) {
-      throw new Error('Gemini APIキーが設定されていません');
-    }
-
+    if (!settings.geminiApiKey) throw new Error('Gemini APIキーが設定されていません');
     const url = `https://generativelanguage.googleapis.com/v1beta/models?key=${settings.geminiApiKey}`;
     const response = await fetch(url);
-    
-    if (!response.ok) {
-      throw new Error('APIキーが無効です');
-    }
-    
+    if (!response.ok) throw new Error('APIキーが無効です');
     return true;
   }
 };
@@ -235,24 +288,14 @@ const History = {
   load() {
     try {
       return JSON.parse(localStorage.getItem(Config.HISTORY_KEY) || '[]');
-    } catch {
-      return [];
-    }
+    } catch { return []; }
   },
-
   save(records) {
-    // 最大50件保持
-    const trimmed = records.slice(0, 50);
-    localStorage.setItem(Config.HISTORY_KEY, JSON.stringify(trimmed));
+    localStorage.setItem(Config.HISTORY_KEY, JSON.stringify(records.slice(0, 50)));
   },
-
   add(record) {
     const records = this.load();
-    records.unshift({
-      id: Date.now(),
-      timestamp: new Date().toISOString(),
-      ...record
-    });
+    records.unshift({ id: Date.now(), timestamp: new Date().toISOString(), ...record });
     this.save(records);
   }
 };
@@ -271,47 +314,46 @@ const App = {
     this.loadSettings();
     this.renderHistory();
     this.initCanvas();
+    this.checkSpeechSupport();
     console.log('[App] Initialized');
+  },
+
+  checkSpeechSupport() {
+    const supported = !!(window.SpeechRecognition || window.webkitSpeechRecognition);
+    if (!supported) {
+      this.toast('⚠️ このブラウザは音声認識に非対応です。Chrome を使用してください。', 'error');
+    }
   },
 
   // --- イベントバインド ---
   bindEvents() {
-    // 録音ボタン
     document.getElementById('recordBtn').addEventListener('click', () => this.toggleRecording());
     document.getElementById('pauseBtn').addEventListener('click', () => this.togglePause());
 
-    // 画面遷移
     document.getElementById('settingsBtn').addEventListener('click', () => this.showScreen('settingsScreen'));
     document.getElementById('backBtn').addEventListener('click', () => this.showScreen('recordScreen'));
     document.getElementById('settingsBackBtn').addEventListener('click', () => this.showScreen('recordScreen'));
 
-    // 設定
     document.getElementById('saveSettingsBtn').addEventListener('click', () => this.saveSettings());
     document.getElementById('testConnectionBtn').addEventListener('click', () => this.testConnection());
 
-    // SOAP操作
     document.getElementById('copyAllBtn').addEventListener('click', () => this.copySOAP());
     document.getElementById('copySOAPBtn').addEventListener('click', () => this.copySOAP());
     document.getElementById('sendToMedixsBtn').addEventListener('click', () => this.sendToMedixs());
     document.getElementById('saveOnlyBtn').addEventListener('click', () => this.saveSOAP());
 
-    // 編集ボタン
     document.querySelectorAll('.edit-btn').forEach(btn => {
       btn.addEventListener('click', () => this.toggleEdit(btn.dataset.target));
     });
   },
 
-  // --- 画面遷移 ---
   showScreen(screenId) {
     document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
     document.getElementById(screenId).classList.add('active');
-    
-    // ヘッダー表示/非表示
-    const header = document.getElementById('header');
-    header.style.display = (screenId === 'recordScreen') ? '' : 'none';
+    document.getElementById('header').style.display = (screenId === 'recordScreen') ? '' : 'none';
   },
 
-  // --- Canvas初期化 ---
+  // --- Canvas ---
   initCanvas() {
     const canvas = document.getElementById('waveformCanvas');
     const container = canvas.parentElement;
@@ -319,7 +361,6 @@ const App = {
     canvas.height = container.clientHeight * window.devicePixelRatio;
     canvas.style.width = container.clientWidth + 'px';
     canvas.style.height = container.clientHeight + 'px';
-    
     const ctx = canvas.getContext('2d');
     ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
     this.drawIdleWaveform(ctx, container.clientWidth, container.clientHeight);
@@ -338,7 +379,6 @@ const App = {
     ctx.stroke();
   },
 
-  // --- 波形アニメーション ---
   startWaveformAnimation() {
     const canvas = document.getElementById('waveformCanvas');
     const ctx = canvas.getContext('2d');
@@ -347,17 +387,12 @@ const App = {
 
     const draw = () => {
       ctx.clearRect(0, 0, width, height);
-      
       const data = this.recorder.getWaveformData();
-      if (!data) {
-        this.waveformAnimId = requestAnimationFrame(draw);
-        return;
-      }
+      if (!data) { this.waveformAnimId = requestAnimationFrame(draw); return; }
 
       ctx.strokeStyle = '#7c3aed';
       ctx.lineWidth = 2;
       ctx.beginPath();
-
       const sliceWidth = width / data.length;
       let x = 0;
       for (let i = 0; i < data.length; i++) {
@@ -368,24 +403,19 @@ const App = {
       }
       ctx.stroke();
 
-      // ボリュームに応じたグロー
       const vol = this.recorder.getVolumeLevel();
       if (vol > 0.05) {
         ctx.strokeStyle = `rgba(124, 58, 237, ${Math.min(vol * 3, 0.6)})`;
         ctx.lineWidth = 4;
         ctx.stroke();
       }
-
       this.waveformAnimId = requestAnimationFrame(draw);
     };
     draw();
   },
 
   stopWaveformAnimation() {
-    if (this.waveformAnimId) {
-      cancelAnimationFrame(this.waveformAnimId);
-      this.waveformAnimId = null;
-    }
+    if (this.waveformAnimId) { cancelAnimationFrame(this.waveformAnimId); this.waveformAnimId = null; }
     this.initCanvas();
   },
 
@@ -400,7 +430,13 @@ const App = {
 
   async startRecording() {
     try {
+      // マイク録音開始（波形表示用）
       await this.recorder.start();
+
+      // リアルタイム音声認識も同時開始
+      SpeechTranscriber.start((final, interim) => {
+        this.updateLiveTranscript(final, interim);
+      });
       
       // UI更新
       const btn = document.getElementById('recordBtn');
@@ -410,8 +446,12 @@ const App = {
       document.getElementById('recordLabel').textContent = 'タップして停止 & SOAP生成';
       document.getElementById('pauseBtn').classList.remove('hidden');
       
+      // リアルタイム表示エリアを表示
+      document.getElementById('liveTranscriptArea').classList.remove('hidden');
+      document.getElementById('liveTranscriptText').textContent = '🎤 音声を認識中...';
+      
       this.startWaveformAnimation();
-      this.toast('🎙️ 録音を開始しました');
+      this.toast('🎙️ 録音 & リアルタイム文字起こし開始');
     } catch (err) {
       this.toast(`❌ ${err.message}`, 'error');
     }
@@ -419,7 +459,9 @@ const App = {
 
   async stopRecording() {
     try {
-      const result = await this.recorder.stop();
+      // 録音と音声認識を停止
+      await this.recorder.stop();
+      const transcript = SpeechTranscriber.stop();
       
       // UI復帰
       const btn = document.getElementById('recordBtn');
@@ -429,14 +471,32 @@ const App = {
       document.getElementById('recordLabel').textContent = 'タップして録音開始';
       document.getElementById('pauseBtn').classList.add('hidden');
       document.getElementById('recordTime').textContent = '00:00';
+      document.getElementById('liveTranscriptArea').classList.add('hidden');
       
       this.stopWaveformAnimation();
-      this.toast('✅ 録音完了 — SOAP生成中...');
 
-      // SOAP生成画面へ
-      await this.processRecording(result);
+      if (!transcript || transcript.trim().length === 0) {
+        this.toast('⚠️ 音声が認識されませんでした。もう一度録音してください。', 'error');
+        return;
+      }
+
+      this.toast(`✅ 文字起こし完了（${transcript.length}文字）— SOAP生成中...`);
+      await this.processTranscript(transcript);
     } catch (err) {
       this.toast(`❌ ${err.message}`, 'error');
+    }
+  },
+
+  /**
+   * リアルタイム文字起こし表示を更新
+   */
+  updateLiveTranscript(finalText, interimText) {
+    const el = document.getElementById('liveTranscriptText');
+    if (el) {
+      const display = finalText + (interimText ? `<span style="color: var(--text-muted)">${interimText}</span>` : '');
+      el.innerHTML = display || '🎤 音声を認識中...';
+      // 自動スクロール
+      el.scrollTop = el.scrollHeight;
     }
   },
 
@@ -450,35 +510,26 @@ const App = {
     }
   },
 
-  // --- SOAP処理 ---
-  async processRecording(recording) {
+  // --- SOAP処理（テキストのみ → Gemini） ---
+  async processTranscript(transcript) {
     this.showScreen('soapScreen');
     document.getElementById('processingIndicator').classList.remove('hidden');
     document.getElementById('soapContent').classList.add('hidden');
 
     try {
-      // 音声をBase64に変換
-      document.getElementById('processingStatus').textContent = '音声データを準備中...';
-      const audioBase64 = await AudioRecorder.blobToBase64(recording.blob);
-
-      // Gemini APIでSOAP生成
-      document.getElementById('processingStatus').textContent = 'AIが文字起こし＆SOAP生成中...';
+      document.getElementById('processingStatus').textContent = 'テキストからSOAP生成中...';
       const drugInfo = document.getElementById('drugInput').value.trim();
       
-      const soapData = await GeminiClient.generateSOAP(
-        audioBase64, 
-        recording.mimeType, 
-        drugInfo
-      );
+      // テキストのみ送信（音声トークン不要！）
+      const soapData = await GeminiClient.generateSOAP(transcript, drugInfo);
 
       this.currentSOAP = soapData;
       this.displaySOAP(soapData);
 
-      // 履歴に保存
       History.add({
         summary: soapData.summary || '記録',
         drugs: drugInfo,
-        duration: recording.duration,
+        duration: this.recorder.getElapsedTime(),
         soap: soapData
       });
       this.renderHistory();
@@ -494,7 +545,6 @@ const App = {
   displaySOAP(data) {
     document.getElementById('processingIndicator').classList.add('hidden');
     document.getElementById('soapContent').classList.remove('hidden');
-
     document.getElementById('soapS').textContent = data.S || '';
     document.getElementById('soapO').textContent = data.O || '';
     document.getElementById('soapA').textContent = data.A || '';
@@ -502,29 +552,22 @@ const App = {
     document.getElementById('transcriptText').textContent = data.transcript || '';
   },
 
-  // --- 編集 ---
   toggleEdit(targetId) {
     const el = document.getElementById(targetId);
     const isEditable = el.contentEditable === 'true';
     el.contentEditable = isEditable ? 'false' : 'true';
-    
     if (!isEditable) {
       el.focus();
       this.toast('✏️ 編集モード ON');
     } else {
-      // 編集内容をcurrentSOAPに反映
       const section = targetId.replace('soap', '');
-      if (this.currentSOAP) {
-        this.currentSOAP[section] = el.textContent;
-      }
+      if (this.currentSOAP) this.currentSOAP[section] = el.textContent;
       this.toast('✅ 編集を保存しました');
     }
   },
 
-  // --- コピー ---
   async copySOAP() {
     if (!this.currentSOAP) return;
-    
     const text = [
       `【S】${this.currentSOAP.S || ''}`,
       `【O】${this.currentSOAP.O || ''}`,
@@ -536,7 +579,6 @@ const App = {
       await navigator.clipboard.writeText(text);
       this.toast('📋 SOAPをクリップボードにコピーしました');
     } catch {
-      // clipboard API が使えない場合のフォールバック
       const textarea = document.createElement('textarea');
       textarea.value = text;
       document.body.appendChild(textarea);
@@ -547,11 +589,8 @@ const App = {
     }
   },
 
-  // --- メディクスへ送信 ---
   sendToMedixs() {
     if (!this.currentSOAP) return;
-
-    // localStorageにSOAPデータを保存（ブックマークレットが読み取る）
     const medixsData = {
       S: this.currentSOAP.S || '',
       O: this.currentSOAP.O || '',
@@ -559,16 +598,11 @@ const App = {
       P: this.currentSOAP.P || '',
       timestamp: new Date().toISOString()
     };
-    
     localStorage.setItem(Config.MEDIXS_DATA_KEY, JSON.stringify(medixsData));
-    
     this.toast('💊 メディクスへの送信データを準備しました\nPCのメディクス画面でブックマークレットを実行してください');
-    
-    // クリップボードにもコピー
     this.copySOAP();
   },
 
-  // --- 保存のみ ---
   saveSOAP() {
     if (!this.currentSOAP) return;
     this.toast('💾 保存しました');
@@ -581,9 +615,7 @@ const App = {
     document.getElementById('geminiApiKey').value = settings.geminiApiKey || '';
     document.getElementById('openaiApiKey').value = settings.openaiApiKey || '';
     document.getElementById('gasUrl').value = settings.gasUrl || '';
-    
-    const providerRadios = document.querySelectorAll('input[name="aiProvider"]');
-    providerRadios.forEach(r => {
+    document.querySelectorAll('input[name="aiProvider"]').forEach(r => {
       r.checked = r.value === settings.aiProvider;
     });
   },
@@ -609,7 +641,6 @@ const App = {
     }
   },
 
-  // --- 履歴 ---
   renderHistory() {
     const list = document.getElementById('historyList');
     const records = History.load();
@@ -623,7 +654,6 @@ const App = {
       const date = new Date(record.timestamp);
       const timeStr = `${date.getMonth()+1}/${date.getDate()} ${date.getHours()}:${String(date.getMinutes()).padStart(2,'0')}`;
       const durStr = record.duration ? `${Math.floor(record.duration/60)}:${String(record.duration%60).padStart(2,'0')}` : '';
-      
       return `
         <div class="history-item" data-id="${record.id}">
           <div class="history-item-info">
@@ -635,7 +665,6 @@ const App = {
       `;
     }).join('');
 
-    // 履歴クリックで表示
     list.querySelectorAll('.history-item').forEach(item => {
       item.addEventListener('click', () => {
         const id = parseInt(item.dataset.id);
@@ -649,16 +678,11 @@ const App = {
     });
   },
 
-  // --- トースト通知 ---
   toast(message, type = 'info') {
     const el = document.getElementById('toast');
     el.textContent = message;
     el.className = 'toast show';
-    if (type === 'error') {
-      el.style.borderColor = 'var(--danger)';
-    } else {
-      el.style.borderColor = 'rgba(255,255,255,0.1)';
-    }
+    el.style.borderColor = type === 'error' ? 'var(--danger)' : 'rgba(255,255,255,0.1)';
     setTimeout(() => { el.className = 'toast'; }, 3500);
   }
 };

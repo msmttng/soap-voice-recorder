@@ -69,6 +69,18 @@
         </button>
       </section>
 
+      <!-- リアルタイム文字起こし表示 -->
+      <section id="liveTranscriptArea" class="card hidden" style="border-color: rgba(124, 58, 237, 0.3);">
+        <div class="card-header">
+          <span class="card-icon">📝</span>
+          <h2>リアルタイム文字起こし</h2>
+          <span style="font-size:11px; color:var(--success); margin-left:auto;">● LIVE</span>
+        </div>
+        <div id="liveTranscriptText" style="font-size:14px; line-height:1.7; color:var(--text-primary); max-height:150px; overflow-y:auto; white-space:pre-wrap;">
+          🎤 音声を認識中...
+        </div>
+      </section>
+
       <!-- 録音履歴 -->
       <section class="card history-card">
         <div class="card-header">
