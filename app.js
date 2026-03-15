@@ -132,14 +132,12 @@ const SpeechTranscriber = {
 // Gemini API クライアント（テキストのみ版）
 // ==============================================
 const GeminiClient = {
-  // モデル + APIバージョンの組み合わせを全て試行
+  // クォータがあるモデルのみ使用（2.x系はlimit:0で使用不可）
   MODEL_CONFIGS: [
+    { model: 'gemini-2.5-flash-lite', api: 'v1beta' },
+    { model: 'gemini-2.5-flash', api: 'v1beta' },
     { model: 'gemini-2.0-flash-lite', api: 'v1beta' },
-    { model: 'gemini-2.0-flash-lite', api: 'v1' },
-    { model: 'gemini-1.5-flash-latest', api: 'v1beta' },
-    { model: 'gemini-1.5-flash-latest', api: 'v1' },
     { model: 'gemini-2.0-flash', api: 'v1beta' },
-    { model: 'gemini-2.0-flash', api: 'v1' },
   ],
 
   /**
