@@ -39,6 +39,13 @@ const GeminiClient = {
    * 音声ファイルからSOAPを生成
    * GASを使わず、PWAから直接Gemini APIを呼び出す
    */
+  // 使用するモデルの優先順位（音声対応・無料枠が大きい順）
+  MODELS: [
+    'gemini-2.0-flash',
+    'gemini-1.5-flash',
+    'gemini-2.0-flash-lite'
+  ],
+
   async generateSOAP(audioBase64, mimeType, drugInfo) {
     const settings = Config.load();
     const apiKey = settings.geminiApiKey;
@@ -71,7 +78,37 @@ const GeminiClient = {
       }
     };
 
-    const model = 'gemini-2.0-flash-lite';
+    // 各モデルを順番に試行（429エラー時にフォールバック）
+    let lastError = null;
+    for (const model of this.MODELS) {
+      try {
+        console.log(`[Gemini] Trying model: ${model}`);
+        const result = await this._callGeminiAPI(model, apiKey, requestBody);
+        console.log(`[Gemini] Success with model: ${model}`);
+        return result;
+      } catch (err) {
+        console.warn(`[Gemini] ${model} failed:`, err.message);
+        lastError = err;
+        
+        // 429（レート制限）の場合、次のモデルを試す前に少し待つ
+        if (err.status === 429) {
+          console.log('[Gemini] Rate limited, waiting 3s before trying next model...');
+          await new Promise(r => setTimeout(r, 3000));
+          continue;
+        }
+        // 403（キー無効）や他のエラーはそのまま投げる
+        if (err.status === 403) throw err;
+      }
+    }
+
+    // 全モデル失敗した場合、最後のエラーを投げる
+    throw lastError || new Error('すべてのAIモデルでエラーが発生しました');
+  },
+
+  /**
+   * Gemini API 呼び出し（個別モデル）
+   */
+  async _callGeminiAPI(model, apiKey, requestBody) {
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
 
     const response = await fetch(url, {
@@ -82,13 +119,14 @@ const GeminiClient = {
 
     if (!response.ok) {
       const error = await response.json().catch(() => ({}));
-      console.error('[Gemini] API Error:', error);
-      if (response.status === 403) {
-        throw new Error('APIキーが無効です。設定画面で正しいキーを入力してください。');
-      } else if (response.status === 429) {
-        throw new Error('API制限に達しました。しばらく待ってからお試しください。');
-      }
-      throw new Error(`Gemini APIエラー: ${error.error?.message || response.statusText}`);
+      console.error(`[Gemini] ${model} API Error:`, error);
+      const err = new Error(
+        response.status === 403 ? 'APIキーが無効です。設定画面で正しいキーを入力してください。' :
+        response.status === 429 ? `${model}: API制限に達しました。別モデルで再試行中...` :
+        `Gemini APIエラー (${model}): ${error.error?.message || response.statusText}`
+      );
+      err.status = response.status;
+      throw err;
     }
 
     const data = await response.json();
@@ -101,8 +139,7 @@ const GeminiClient = {
     try {
       return JSON.parse(text);
     } catch {
-      // JSONパースに失敗した場合、テキストから抽出を試みる
-      console.warn('[Gemini] JSON parse failed, attempting extraction');
+      console.warn(`[Gemini] ${model} JSON parse failed, attempting extraction`);
       return this._extractSOAPFromText(text);
     }
   },
