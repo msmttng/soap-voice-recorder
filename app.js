@@ -132,14 +132,15 @@ const SpeechTranscriber = {
 // Gemini API クライアント（テキストのみ版）
 // ==============================================
 const GeminiClient = {
+  // 軽量モデルから順に試行（レート制限回避）
   MODELS: [
-    'gemini-2.0-flash',
+    'gemini-2.0-flash-lite',
     'gemini-1.5-flash',
-    'gemini-2.0-flash-lite'
+    'gemini-2.0-flash'
   ],
 
   /**
-   * テキストからSOAPを生成（音声トークン不要！）
+   * テキストからSOAPを生成（複数モデルフォールバック）
    */
   async generateSOAP(transcript, drugInfo) {
     const settings = Config.load();
@@ -159,77 +160,102 @@ const GeminiClient = {
         temperature: 0.3,
         topP: 0.8,
         maxOutputTokens: 4096
-        // NOTE: responseMimeType を削除（無料枠で制限される場合がある）
       }
     };
 
-    // まず gemini-2.0-flash を試行
-    const model = 'gemini-2.0-flash';
-    console.log(`[Gemini] Using model: ${model}`);
-    
-    return await this._callAPIWithRetry(model, apiKey, requestBody);
+    // 全モデルを順に試行
+    const errors = [];
+    for (let i = 0; i < this.MODELS.length; i++) {
+      const model = this.MODELS[i];
+      const statusEl = document.getElementById('processingStatus');
+      
+      console.log(`[Gemini] Trying model ${i + 1}/${this.MODELS.length}: ${model}`);
+      if (statusEl) {
+        statusEl.textContent = `${model} で生成中...`;
+      }
+
+      try {
+        return await this._callAPI(model, apiKey, requestBody);
+      } catch (err) {
+        console.warn(`[Gemini] ${model} failed:`, err.message);
+        errors.push(`${model}: ${err.message}`);
+        
+        // 429なら次のモデルへ即切り替え
+        if (err.isRateLimit && i < this.MODELS.length - 1) {
+          if (statusEl) {
+            statusEl.textContent = `${model}: レート制限。${this.MODELS[i + 1]} に切替中...`;
+          }
+          await new Promise(r => setTimeout(r, 2000)); // 2秒待機
+          continue;
+        }
+        
+        // 最後のモデルでも429なら10秒待ってリトライ
+        if (err.isRateLimit && i === this.MODELS.length - 1) {
+          if (statusEl) {
+            for (let sec = 15; sec > 0; sec--) {
+              statusEl.textContent = `全モデル制限中...${sec}秒後に再試行`;
+              await new Promise(r => setTimeout(r, 1000));
+            }
+          }
+          // もう一周試す
+          for (const retryModel of this.MODELS) {
+            console.log(`[Gemini] Retry with: ${retryModel}`);
+            if (statusEl) statusEl.textContent = `${retryModel} で再試行中...`;
+            try {
+              return await this._callAPI(retryModel, apiKey, requestBody);
+            } catch (retryErr) {
+              console.warn(`[Gemini] Retry ${retryModel} failed:`, retryErr.message);
+              continue;
+            }
+          }
+        }
+        
+        // 429以外のエラーは次モデルへ
+        if (!err.isRateLimit && i < this.MODELS.length - 1) {
+          continue;
+        }
+      }
+    }
+
+    throw new Error(`全モデルで生成に失敗しました。\n${errors.join('\n')}`);
   },
 
   /**
-   * リトライ付きAPI呼び出し（最大2回、間隔60秒）
+   * 単一モデルでのAPI呼び出し（リトライなし）
    */
-  async _callAPIWithRetry(model, apiKey, requestBody, attempt = 1) {
+  async _callAPI(model, apiKey, requestBody) {
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
 
-    try {
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(requestBody)
-      });
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(requestBody)
+    });
 
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        const errorMsg = errorData.error?.message || response.statusText;
-        console.error(`[Gemini] Error (${response.status}):`, errorMsg);
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      const errorMsg = errorData.error?.message || response.statusText;
+      console.error(`[Gemini] ${model} Error (${response.status}):`, errorMsg);
 
-        if (response.status === 429) {
-          if (attempt <= 2) {
-            // 60秒待ってリトライ
-            const waitSec = 60;
-            console.log(`[Gemini] Rate limited. Waiting ${waitSec}s (attempt ${attempt}/2)...`);
-            
-            // UI更新（処理中画面が表示されている場合）
-            const statusEl = document.getElementById('processingStatus');
-            if (statusEl) {
-              for (let i = waitSec; i > 0; i--) {
-                statusEl.textContent = `API制限中...${i}秒後に自動リトライ（${attempt}/2回目）`;
-                await new Promise(r => setTimeout(r, 1000));
-              }
-            } else {
-              await new Promise(r => setTimeout(r, waitSec * 1000));
-            }
-            
-            return await this._callAPIWithRetry(model, apiKey, requestBody, attempt + 1);
-          }
-          throw new Error(`API制限が続いています。数分待ってからお試しください。\n詳細: ${errorMsg}`);
-        }
-        
-        if (response.status === 403) {
-          throw new Error(`APIキーが無効です。\n詳細: ${errorMsg}`);
-        }
-        
-        throw new Error(`APIエラー (${response.status}): ${errorMsg}`);
+      if (response.status === 429) {
+        const err = new Error(`レート制限: ${errorMsg}`);
+        err.isRateLimit = true;
+        throw err;
       }
-
-      const data = await response.json();
-      const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
-      if (!text) throw new Error('AIからの応答が空でした。もう一度お試しください。');
-
-      // JSON抽出（responseMimeTypeなしなので手動パース）
-      return this._parseSOAPResponse(text);
-
-    } catch (err) {
-      if (err.message.includes('Failed to fetch') || err.message.includes('NetworkError')) {
-        throw new Error('ネットワークエラー。インターネット接続を確認してください。');
+      
+      if (response.status === 403 || response.status === 400) {
+        throw new Error(`APIキーが無効です。設定を確認してください。\n詳細: ${errorMsg}`);
       }
-      throw err;
+      
+      throw new Error(`APIエラー (${response.status}): ${errorMsg}`);
     }
+
+    const data = await response.json();
+    const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (!text) throw new Error('AIからの応答が空でした。');
+
+    console.log(`[Gemini] ✅ ${model} success!`);
+    return this._parseSOAPResponse(text);
   },
 
   /**
