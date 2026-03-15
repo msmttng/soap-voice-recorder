@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="theme-color" content="#0a0a1a">
+  <title>SOAP Voice Recorder</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@300;400;500;600;700&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="app">
+    <!-- ヘッダー -->
+    <header id="header">
+      <div class="header-left">
+        <span class="logo-icon">💊</span>
+        <h1>SOAP Recorder</h1>
+      </div>
+      <button id="settingsBtn" class="icon-btn" aria-label="設定">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/></svg>
+      </button>
+    </header>
+
+    <!-- メイン画面: 録音 -->
+    <main id="recordScreen" class="screen active">
+      <!-- 薬品名入力 -->
+      <section class="card drug-input-card">
+        <div class="card-header">
+          <span class="card-icon">💊</span>
+          <h2>処方薬情報</h2>
+        </div>
+        <textarea id="drugInput" placeholder="薬品名を入力&#10;例: アムロジピン5mg、エナラプリル5mg" rows="3"></textarea>
+        <p class="hint">NSIPSから取得した薬品名をペースト、または手入力</p>
+      </section>
+
+      <!-- 録音コントロール -->
+      <section class="card recorder-card">
+        <div class="recording-visualizer" id="visualizer">
+          <canvas id="waveformCanvas"></canvas>
+          <div class="record-time" id="recordTime">00:00</div>
+        </div>
+        
+        <div class="recorder-controls">
+          <button id="recordBtn" class="record-btn" aria-label="録音">
+            <div class="record-btn-inner">
+              <svg id="micIcon" width="32" height="32" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/>
+                <path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/>
+              </svg>
+              <svg id="stopIcon" class="hidden" width="32" height="32" viewBox="0 0 24 24" fill="currentColor">
+                <rect x="6" y="6" width="12" height="12" rx="2"/>
+              </svg>
+            </div>
+          </button>
+          <p id="recordLabel" class="record-label">タップして録音開始</p>
+        </div>
+
+        <button id="pauseBtn" class="control-btn hidden" aria-label="一時停止">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+            <rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/>
+          </svg>
+          一時停止
+        </button>
+      </section>
+
+      <!-- 録音履歴 -->
+      <section class="card history-card">
+        <div class="card-header">
+          <span class="card-icon">📋</span>
+          <h2>最近の記録</h2>
+        </div>
+        <div id="historyList" class="history-list">
+          <p class="empty-state">まだ記録がありません</p>
+        </div>
+      </section>
+    </main>
+
+    <!-- SOAP確認・編集画面 -->
+    <main id="soapScreen" class="screen">
+      <div class="soap-header">
+        <button id="backBtn" class="back-btn">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+          戻る
+        </button>
+        <h2>SOAP確認</h2>
+        <div class="soap-actions-mini">
+          <button id="copyAllBtn" class="icon-btn" title="全体コピー">📋</button>
+        </div>
+      </div>
+
+      <!-- AI処理中 -->
+      <div id="processingIndicator" class="processing hidden">
+        <div class="processing-animation">
+          <div class="pulse-ring"></div>
+          <div class="pulse-ring delay-1"></div>
+          <div class="pulse-ring delay-2"></div>
+          <span class="processing-icon">🧠</span>
+        </div>
+        <p class="processing-text">AIが分析中...</p>
+        <p class="processing-sub" id="processingStatus">音声を文字起こし中</p>
+      </div>
+
+      <!-- SOAP表示 -->
+      <div id="soapContent" class="soap-content hidden">
+        <div class="soap-section" data-section="S">
+          <div class="soap-section-header">
+            <span class="soap-badge s-badge">S</span>
+            <span class="soap-section-title">主観的情報</span>
+            <button class="edit-btn" data-target="soapS">✏️</button>
+          </div>
+          <div id="soapS" class="soap-text" contenteditable="false"></div>
+        </div>
+
+        <div class="soap-section" data-section="O">
+          <div class="soap-section-header">
+            <span class="soap-badge o-badge">O</span>
+            <span class="soap-section-title">客観的情報</span>
+            <button class="edit-btn" data-target="soapO">✏️</button>
+          </div>
+          <div id="soapO" class="soap-text" contenteditable="false"></div>
+        </div>
+
+        <div class="soap-section" data-section="A">
+          <div class="soap-section-header">
+            <span class="soap-badge a-badge">A</span>
+            <span class="soap-section-title">薬学的評価</span>
+            <span class="ai-suggested">💊 薬品情報から提案</span>
+            <button class="edit-btn" data-target="soapA">✏️</button>
+          </div>
+          <div id="soapA" class="soap-text" contenteditable="false"></div>
+        </div>
+
+        <div class="soap-section" data-section="P">
+          <div class="soap-section-header">
+            <span class="soap-badge p-badge">P</span>
+            <span class="soap-section-title">指導計画</span>
+            <span class="ai-suggested">💊 薬品情報から提案</span>
+            <button class="edit-btn" data-target="soapP">✏️</button>
+          </div>
+          <div id="soapP" class="soap-text" contenteditable="false"></div>
+        </div>
+
+        <!-- 文字起こしテキスト（折りたたみ） -->
+        <details class="transcript-details">
+          <summary>📝 文字起こし全文を表示</summary>
+          <div id="transcriptText" class="transcript-text"></div>
+        </details>
+
+        <!-- アクションボタン -->
+        <div class="soap-actions">
+          <button id="sendToMedixsBtn" class="action-btn primary-btn">
+            💊 メディクスへ送信
+          </button>
+          <button id="copySOAPBtn" class="action-btn secondary-btn">
+            📋 SOAPをコピー
+          </button>
+          <button id="saveOnlyBtn" class="action-btn tertiary-btn">
+            💾 保存のみ
+          </button>
+        </div>
+      </div>
+    </main>
+
+    <!-- 設定画面 -->
+    <main id="settingsScreen" class="screen">
+      <div class="soap-header">
+        <button id="settingsBackBtn" class="back-btn">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+          戻る
+        </button>
+        <h2>設定</h2>
+      </div>
+
+      <div class="settings-content">
+        <section class="card settings-card">
+          <h3>🔑 APIキー</h3>
+          <div class="setting-item">
+            <label for="geminiApiKey">Gemini API Key</label>
+            <input type="password" id="geminiApiKey" placeholder="AIza...">
+            <p class="hint">Google AI Studio で取得した無料キー</p>
+          </div>
+          <div class="setting-item">
+            <label for="openaiApiKey">OpenAI API Key（有料版）</label>
+            <input type="password" id="openaiApiKey" placeholder="sk-..." disabled>
+            <p class="hint">Phase 2 で使用（話者分離・デュアルAI）</p>
+          </div>
+        </section>
+
+        <section class="card settings-card">
+          <h3>☁️ バックエンド</h3>
+          <div class="setting-item">
+            <label for="gasUrl">GAS Web App URL</label>
+            <input type="url" id="gasUrl" placeholder="https://script.google.com/macros/s/...">
+            <p class="hint">Google Apps Script のデプロイURL</p>
+          </div>
+        </section>
+
+        <section class="card settings-card">
+          <h3>🔧 AIプロバイダー</h3>
+          <div class="setting-item">
+            <label>
+              <input type="radio" name="aiProvider" value="gemini" checked>
+              Gemini（無料）
+            </label>
+            <label>
+              <input type="radio" name="aiProvider" value="openai" disabled>
+              OpenAI（有料 — Phase 2）
+            </label>
+          </div>
+        </section>
+
+        <button id="saveSettingsBtn" class="action-btn primary-btn">
+          💾 設定を保存
+        </button>
+        <button id="testConnectionBtn" class="action-btn secondary-btn">
+          🔗 接続テスト
+        </button>
+      </div>
+    </main>
+
+    <!-- トースト通知 -->
+    <div id="toast" class="toast hidden"></div>
+  </div>
+
+  <script src="recorder.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
