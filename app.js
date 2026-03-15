@@ -149,73 +149,112 @@ const GeminiClient = {
       throw new Error('Gemini APIキーが設定されていません。設定画面でAPIキーを入力してください。');
     }
 
-    const systemPrompt = this._buildPrompt(transcript, drugInfo);
+    const prompt = this._buildPrompt(transcript, drugInfo);
 
     const requestBody = {
       contents: [{
-        parts: [{
-          text: systemPrompt
-        }]
+        parts: [{ text: prompt }]
       }],
       generationConfig: {
         temperature: 0.3,
         topP: 0.8,
-        maxOutputTokens: 4096,
-        responseMimeType: 'application/json'
+        maxOutputTokens: 4096
+        // NOTE: responseMimeType を削除（無料枠で制限される場合がある）
       }
     };
 
-    // 各モデルを順番に試行
-    let lastError = null;
-    for (const model of this.MODELS) {
-      try {
-        console.log(`[Gemini] Trying model: ${model}`);
-        const result = await this._callAPI(model, apiKey, requestBody);
-        console.log(`[Gemini] Success with model: ${model}`);
-        return result;
-      } catch (err) {
-        console.warn(`[Gemini] ${model} failed:`, err.message);
-        lastError = err;
-        if (err.status === 429) {
-          await new Promise(r => setTimeout(r, 3000));
-          continue;
-        }
-        if (err.status === 403) throw err;
-      }
-    }
-    throw lastError || new Error('すべてのAIモデルでエラーが発生しました');
+    // まず gemini-2.0-flash を試行
+    const model = 'gemini-2.0-flash';
+    console.log(`[Gemini] Using model: ${model}`);
+    
+    return await this._callAPIWithRetry(model, apiKey, requestBody);
   },
 
-  async _callAPI(model, apiKey, requestBody) {
+  /**
+   * リトライ付きAPI呼び出し（最大2回、間隔60秒）
+   */
+  async _callAPIWithRetry(model, apiKey, requestBody, attempt = 1) {
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
 
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(requestBody)
-    });
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(requestBody)
+      });
 
-    if (!response.ok) {
-      const error = await response.json().catch(() => ({}));
-      console.error(`[Gemini] ${model} Error:`, error);
-      const err = new Error(
-        response.status === 403 ? 'APIキーが無効です。設定画面で正しいキーを入力してください。' :
-        response.status === 429 ? `${model}: レート制限。別モデルで再試行中...` :
-        `Gemini APIエラー (${model}): ${error.error?.message || response.statusText}`
-      );
-      err.status = response.status;
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        const errorMsg = errorData.error?.message || response.statusText;
+        console.error(`[Gemini] Error (${response.status}):`, errorMsg);
+
+        if (response.status === 429) {
+          if (attempt <= 2) {
+            // 60秒待ってリトライ
+            const waitSec = 60;
+            console.log(`[Gemini] Rate limited. Waiting ${waitSec}s (attempt ${attempt}/2)...`);
+            
+            // UI更新（処理中画面が表示されている場合）
+            const statusEl = document.getElementById('processingStatus');
+            if (statusEl) {
+              for (let i = waitSec; i > 0; i--) {
+                statusEl.textContent = `API制限中...${i}秒後に自動リトライ（${attempt}/2回目）`;
+                await new Promise(r => setTimeout(r, 1000));
+              }
+            } else {
+              await new Promise(r => setTimeout(r, waitSec * 1000));
+            }
+            
+            return await this._callAPIWithRetry(model, apiKey, requestBody, attempt + 1);
+          }
+          throw new Error(`API制限が続いています。数分待ってからお試しください。\n詳細: ${errorMsg}`);
+        }
+        
+        if (response.status === 403) {
+          throw new Error(`APIキーが無効です。\n詳細: ${errorMsg}`);
+        }
+        
+        throw new Error(`APIエラー (${response.status}): ${errorMsg}`);
+      }
+
+      const data = await response.json();
+      const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (!text) throw new Error('AIからの応答が空でした。もう一度お試しください。');
+
+      // JSON抽出（responseMimeTypeなしなので手動パース）
+      return this._parseSOAPResponse(text);
+
+    } catch (err) {
+      if (err.message.includes('Failed to fetch') || err.message.includes('NetworkError')) {
+        throw new Error('ネットワークエラー。インターネット接続を確認してください。');
+      }
       throw err;
     }
+  },
 
-    const data = await response.json();
-    const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
-    if (!text) throw new Error('AIからの応答が空でした');
-
-    try {
-      return JSON.parse(text);
-    } catch {
-      return this._extractSOAPFromText(text);
+  /**
+   * AIレスポンスからSOAP JSONを抽出
+   */
+  _parseSOAPResponse(text) {
+    // JSONブロックを探す
+    const jsonMatch = text.match(/```json\s*([\s\S]*?)```/);
+    if (jsonMatch) {
+      try { return JSON.parse(jsonMatch[1]); } catch {}
     }
+
+    // 直接JSONの場合
+    const braceMatch = text.match(/\{[\s\S]*\}/);
+    if (braceMatch) {
+      try { return JSON.parse(braceMatch[0]); } catch {}
+    }
+
+    // パース失敗 → テキストをそのまま使う
+    return {
+      transcript: text,
+      S: '（自動パースに失敗しました。文字起こし全文を確認してください）',
+      O: '', A: '', P: '',
+      summary: '要確認'
+    };
   },
 
   _buildPrompt(transcript, drugInfo) {
