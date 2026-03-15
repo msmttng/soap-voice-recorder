@@ -132,15 +132,18 @@ const SpeechTranscriber = {
 // Gemini API クライアント（テキストのみ版）
 // ==============================================
 const GeminiClient = {
-  // 軽量モデルから順に試行（レート制限回避）
-  MODELS: [
-    'gemini-2.0-flash-lite',
-    'gemini-1.5-flash',
-    'gemini-2.0-flash'
+  // モデル + APIバージョンの組み合わせを全て試行
+  MODEL_CONFIGS: [
+    { model: 'gemini-2.0-flash-lite', api: 'v1beta' },
+    { model: 'gemini-2.0-flash-lite', api: 'v1' },
+    { model: 'gemini-1.5-flash-latest', api: 'v1beta' },
+    { model: 'gemini-1.5-flash-latest', api: 'v1' },
+    { model: 'gemini-2.0-flash', api: 'v1beta' },
+    { model: 'gemini-2.0-flash', api: 'v1' },
   ],
 
   /**
-   * テキストからSOAPを生成（複数モデルフォールバック）
+   * テキストからSOAPを生成（複数モデル+APIバージョンフォールバック）
    */
   async generateSOAP(transcript, drugInfo) {
     const settings = Config.load();
@@ -159,72 +162,66 @@ const GeminiClient = {
       generationConfig: {
         temperature: 0.3,
         topP: 0.8,
-        maxOutputTokens: 4096
+        maxOutputTokens: 2048
       }
     };
 
-    // 全モデルを順に試行
+    // 全設定を順に試行
     const errors = [];
-    for (let i = 0; i < this.MODELS.length; i++) {
-      const model = this.MODELS[i];
-      const statusEl = document.getElementById('processingStatus');
+    const statusEl = document.getElementById('processingStatus');
+    
+    for (let i = 0; i < this.MODEL_CONFIGS.length; i++) {
+      const cfg = this.MODEL_CONFIGS[i];
+      const label = `${cfg.model} (${cfg.api})`;
       
-      console.log(`[Gemini] Trying model ${i + 1}/${this.MODELS.length}: ${model}`);
+      console.log(`[Gemini] Trying ${i + 1}/${this.MODEL_CONFIGS.length}: ${label}`);
       if (statusEl) {
-        statusEl.textContent = `${model} で生成中...`;
+        statusEl.textContent = `${cfg.model} で生成中...`;
       }
 
       try {
-        return await this._callAPI(model, apiKey, requestBody);
+        return await this._callAPI(cfg.model, cfg.api, apiKey, requestBody);
       } catch (err) {
-        console.warn(`[Gemini] ${model} failed:`, err.message);
-        errors.push(`${model}: ${err.message}`);
+        console.warn(`[Gemini] ${label} failed:`, err.message);
+        errors.push(`${label}: ${err.message}`);
         
-        // 429なら次のモデルへ即切り替え
-        if (err.isRateLimit && i < this.MODELS.length - 1) {
-          if (statusEl) {
-            statusEl.textContent = `${model}: レート制限。${this.MODELS[i + 1]} に切替中...`;
+        // 少し待って次へ
+        if (i < this.MODEL_CONFIGS.length - 1) {
+          if (statusEl && err.isRateLimit) {
+            statusEl.textContent = `${cfg.model}: 制限。次のモデルへ...`;
           }
-          await new Promise(r => setTimeout(r, 2000)); // 2秒待機
-          continue;
-        }
-        
-        // 最後のモデルでも429なら10秒待ってリトライ
-        if (err.isRateLimit && i === this.MODELS.length - 1) {
-          if (statusEl) {
-            for (let sec = 15; sec > 0; sec--) {
-              statusEl.textContent = `全モデル制限中...${sec}秒後に再試行`;
-              await new Promise(r => setTimeout(r, 1000));
-            }
-          }
-          // もう一周試す
-          for (const retryModel of this.MODELS) {
-            console.log(`[Gemini] Retry with: ${retryModel}`);
-            if (statusEl) statusEl.textContent = `${retryModel} で再試行中...`;
-            try {
-              return await this._callAPI(retryModel, apiKey, requestBody);
-            } catch (retryErr) {
-              console.warn(`[Gemini] Retry ${retryModel} failed:`, retryErr.message);
-              continue;
-            }
-          }
-        }
-        
-        // 429以外のエラーは次モデルへ
-        if (!err.isRateLimit && i < this.MODELS.length - 1) {
+          await new Promise(r => setTimeout(r, 1500));
           continue;
         }
       }
     }
 
-    throw new Error(`全モデルで生成に失敗しました。\n${errors.join('\n')}`);
+    // 最終手段: 30秒待って最初のモデルでリトライ
+    if (statusEl) {
+      for (let sec = 30; sec > 0; sec--) {
+        statusEl.textContent = `全モデル制限中...${sec}秒後に最終リトライ`;
+        await new Promise(r => setTimeout(r, 1000));
+      }
+    }
+    
+    // もう1回だけ全パターン試行
+    for (const cfg of this.MODEL_CONFIGS) {
+      try {
+        if (statusEl) statusEl.textContent = `${cfg.model} で最終リトライ中...`;
+        return await this._callAPI(cfg.model, cfg.api, apiKey, requestBody);
+      } catch (e) {
+        continue;
+      }
+    }
+
+    throw new Error(`全モデルで生成に失敗しました。しばらく時間をおいてお試しください。\n${errors.slice(0, 3).join('\n')}`);
   },
 
   /**
-   * 単一モデルでのAPI呼び出し（リトライなし）
+   * 単一モデルでのAPI呼び出し
    */
-  async _callAPI(model, apiKey, requestBody) {
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+  async _callAPI(model, apiVersion, apiKey, requestBody) {
+    const url = `https://generativelanguage.googleapis.com/${apiVersion}/models/${model}:generateContent?key=${apiKey}`;
 
     const response = await fetch(url, {
       method: 'POST',
@@ -235,7 +232,7 @@ const GeminiClient = {
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({}));
       const errorMsg = errorData.error?.message || response.statusText;
-      console.error(`[Gemini] ${model} Error (${response.status}):`, errorMsg);
+      console.error(`[Gemini] ${model}(${apiVersion}) Error ${response.status}:`, errorMsg);
 
       if (response.status === 429) {
         const err = new Error(`レート制限: ${errorMsg}`);
@@ -244,7 +241,7 @@ const GeminiClient = {
       }
       
       if (response.status === 403 || response.status === 400) {
-        throw new Error(`APIキーが無効です。設定を確認してください。\n詳細: ${errorMsg}`);
+        throw new Error(`APIエラー: ${errorMsg}`);
       }
       
       throw new Error(`APIエラー (${response.status}): ${errorMsg}`);
@@ -254,7 +251,7 @@ const GeminiClient = {
     const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
     if (!text) throw new Error('AIからの応答が空でした。');
 
-    console.log(`[Gemini] ✅ ${model} success!`);
+    console.log(`[Gemini] ✅ ${model}(${apiVersion}) success!`);
     return this._parseSOAPResponse(text);
   },
 
