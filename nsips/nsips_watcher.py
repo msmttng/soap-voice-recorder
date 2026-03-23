@@ -98,8 +98,15 @@ def watch_folder(folder: str, gas_url: str, poll_interval: int = DEFAULT_POLL_IN
 
     while True:
         try:
-            # DATA ファイルを探す（大文字小文字両方）
-            for pattern in ['DATA', 'DATA.*', 'data', 'data.*', '*.dat']:
+            # DATA ファイルを探す（SIPS12/DATA/ 配下 or 直接 or 複数パターン）
+            for pattern in [
+                'SIPS*/DATA/*.txt',  # 実環境の構造
+                'DATA/*.txt',
+                'DATA',
+                'DATA.*',
+                'data',
+                '*.dat'
+            ]:
                 for filepath in folder_path.glob(pattern):
                     if not filepath.is_file():
                         continue

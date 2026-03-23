@@ -1,218 +1,139 @@
 """
-nsips_parser.py — JAHIS10形式 NSIPSデータパーサー
+nsips_parser.py — NSIPS VER010401 形式パーサー
 
-レセコンが出力するNSIPSデータ（JAHIS処方データ交換規約）を解析し、
+レセコンが出力するNSIPSデータを解析し、
 患者情報と処方内容を構造化して返す。
 
-対応レコード:
-  1: 医療機関名
-  5: 処方医
-  11: 患者氏名
-  12: 性別
-  13: 生年月日
-  51: 処方日
-  101: RP（処方グループ）
-  111: 用法
-  181: 補足
-  201: 薬品情報
+VER010401フォーマット:
+  行0: ヘッダ（バージョン, 日時, 薬局名, 住所等）
+  行1: 患者情報（患者コード, カナ, 氏名, 性別, 生年月日, 住所等）
+  行2+: 処方データ（レコードタイプ別）
+    2: 処方ヘッダ
+    3: 用法
+    4: 薬品
+    5: 請求
+    6: 調剤明細
+    7: 加算
 """
 
 import re
+import os
 from datetime import datetime
 
 
 def parse_nsips(text: str) -> dict:
     """
-    JAHIS10形式のNSIPSテキストを解析して構造化データを返す。
-    
-    Returns:
-        {
-            "format": "JAHIS10",
-            "institution": "医療機関名",
-            "doctor": "処方医名",
-            "patient": {
-                "name": "患者名",
-                "kana": "カナ",
-                "gender": "女",
-                "dob": "2014-08-21",
-                "age": 11
-            },
-            "prescription_date": "2026-01-30",
-            "prescriptions": [
-                {
-                    "rp": 1,
-                    "type": "内服",
-                    "days": 30,
-                    "usage": "分２、朝・夕食後服用",
-                    "drugs": [
-                        {
-                            "code": "4490025F4ZZZ",
-                            "name": "オロパタジン塩酸塩口腔内崩壊錠５ｍｇ",
-                            "quantity": "2",
-                            "unit": "Ｔ"
-                        }
-                    ]
-                }
-            ],
-            "drug_summary": "処方薬の要約テキスト"
-        }
+    NSIPS VER010401形式のテキストを解析して構造化データを返す。
     """
-    lines = text.strip().split('\n')
+    lines = [l.rstrip() for l in text.strip().split('\n') if l.strip()]
     
     result = {
         "format": "",
-        "institution": "",
-        "doctor": "",
+        "pharmacy": "",
+        "pharmacy_address": "",
+        "pharmacy_tel": "",
         "patient": {
+            "code": "",
             "name": "",
             "kana": "",
             "gender": "",
             "dob": "",
-            "age": None
+            "age": None,
+            "address": "",
+            "tel": ""
         },
+        "institution": "",
+        "doctor": "",
         "prescription_date": "",
-        "prescriptions": [],
+        "drugs": [],
         "drug_summary": ""
     }
     
-    current_rp = None
-    rp_map = {}  # rp_number -> prescription dict
+    if not lines:
+        return result
     
-    # 剤形マップ
-    type_map = {
-        "1": "内服",
-        "2": "屯服",
-        "3": "外用",
-        "4": "注射",
-    }
+    # === 行0: ヘッダ ===
+    # VER010401,20260324082602,,VER7,13,4,1158526,丸山薬局,1440052,東京都大田区...,電話,
+    h = lines[0].split(',')
+    result["format"] = h[0] if len(h) > 0 else ""
+    if len(h) > 1 and len(h[1]) >= 8:
+        result["prescription_date"] = f"{h[1][:4]}-{h[1][4:6]}-{h[1][6:8]}"
+    result["pharmacy"] = h[7] if len(h) > 7 else ""
+    result["pharmacy_address"] = h[9] if len(h) > 9 else ""
+    result["pharmacy_tel"] = h[10] if len(h) > 10 else ""
     
-    for line in lines:
-        line = line.strip()
-        if not line:
-            continue
-        
-        # ヘッダー行
-        if line.startswith('JAHIS'):
-            result["format"] = line
-            continue
-        
+    # === 行1: 患者情報 ===
+    # 1,患者コード,カナ,氏名,性別(1=男,2=女),生年月日(YYYYMMDD),郵便番号,住所,...,電話,...
+    if len(lines) > 1:
+        p = lines[1].split(',')
+        if len(p) > 1:
+            result["patient"]["code"] = p[1] if len(p) > 1 else ""
+            result["patient"]["kana"] = p[2] if len(p) > 2 else ""
+            result["patient"]["name"] = (p[3] if len(p) > 3 else "").replace("　", " ").strip()
+            
+            if len(p) > 4:
+                gender_code = p[4].strip()
+                result["patient"]["gender"] = "男" if gender_code == "1" else "女" if gender_code == "2" else gender_code
+            
+            if len(p) > 5 and len(p[5]) == 8:
+                try:
+                    dob = datetime.strptime(p[5], '%Y%m%d')
+                    result["patient"]["dob"] = dob.strftime('%Y-%m-%d')
+                    result["patient"]["age"] = (datetime.now() - dob).days // 365
+                except ValueError:
+                    pass
+            
+            result["patient"]["address"] = p[7] if len(p) > 7 else ""
+            # 電話番号を探す（複数のフィールドにある可能性）
+            for idx in range(8, min(len(p), 14)):
+                if p[idx] and re.match(r'^[\d\-]+$', p[idx]) and len(p[idx]) > 5:
+                    result["patient"]["tel"] = p[idx]
+                    break
+    
+    # === 行2以降: 処方・薬品データ ===
+    # 各行のレコードタイプ（最初のフィールド）で判別
+    drugs_found = []
+    
+    for line in lines[2:]:
         fields = line.split(',')
-        if not fields:
-            continue
+        record_type = fields[0].strip() if fields else ""
         
-        record_type = fields[0].strip()
+        # 薬品名を含む行を検索（フィールドの中に日本語薬品名が含まれる行）
+        for i, field in enumerate(fields):
+            field = field.strip()
+            # 薬品名パターン: 日本語+英数字を含む、「錠」「mg」「カプセル」等
+            if field and len(field) >= 4 and re.search(r'(錠|ｍｇ|mg|カプセル|顆粒|散|液|軟膏|クリーム|テープ|パッチ|点眼|点鼻|噴霧|ＯＤ)', field):
+                # 重複チェック
+                if field not in [d["name"] for d in drugs_found]:
+                    # 薬品コード（前のフィールドがコードっぽい場合）
+                    code = ""
+                    if i > 0 and re.match(r'^[0-9A-Za-z]{7,}', fields[i-1].strip()):
+                        code = fields[i-1].strip()
+                    
+                    drugs_found.append({
+                        "name": field,
+                        "name_clean": re.sub(r'【[^】]*】', '', field).strip(),
+                        "code": code
+                    })
         
-        try:
-            if record_type == '1':
-                # 医療機関: 1,区分,機関コード,都道府県,名称
-                if len(fields) >= 5:
-                    result["institution"] = fields[4].strip()
-                    
-            elif record_type == '5':
-                # 処方医: 5,,,医師名
-                if len(fields) >= 4:
-                    result["doctor"] = fields[3].strip()
-                    
-            elif record_type == '11':
-                # 患者: 11,,氏名,カナ
-                if len(fields) >= 3:
-                    result["patient"]["name"] = fields[2].strip()
-                if len(fields) >= 4:
-                    result["patient"]["kana"] = fields[3].strip()
-                    
-            elif record_type == '12':
-                # 性別: 12,性別コード (1=男, 2=女)
-                if len(fields) >= 2:
-                    gender_code = fields[1].strip()
-                    result["patient"]["gender"] = "男" if gender_code == "1" else "女" if gender_code == "2" else gender_code
-                    
-            elif record_type == '13':
-                # 生年月日: 13,YYYYMMDD
-                if len(fields) >= 2:
-                    dob_str = fields[1].strip()
-                    if len(dob_str) == 8:
-                        dob = datetime.strptime(dob_str, '%Y%m%d')
-                        result["patient"]["dob"] = dob.strftime('%Y-%m-%d')
-                        age = (datetime.now() - dob).days // 365
-                        result["patient"]["age"] = age
-                        
-            elif record_type == '51':
-                # 処方日: 51,YYYYMMDD
-                if len(fields) >= 2:
-                    date_str = fields[1].strip()
-                    if len(date_str) == 8:
-                        pd = datetime.strptime(date_str, '%Y%m%d')
-                        result["prescription_date"] = pd.strftime('%Y-%m-%d')
-                        
-            elif record_type == '101':
-                # RP: 101,RP番号,剤形コード,,日数
-                rp_num = int(fields[1]) if len(fields) > 1 else 0
-                rp_type_code = fields[2].strip() if len(fields) > 2 else ""
-                days = fields[4].strip() if len(fields) > 4 else ""
-                
-                rp = {
-                    "rp": rp_num,
-                    "type": type_map.get(rp_type_code, rp_type_code),
-                    "days": int(days) if days and days.isdigit() else None,
-                    "usage": "",
-                    "notes": "",
-                    "drugs": []
-                }
-                rp_map[rp_num] = rp
-                current_rp = rp_num
-                
-            elif record_type == '111':
-                # 用法: 111,RP番号,連番,,用法テキスト
-                rp_num = int(fields[1]) if len(fields) > 1 else current_rp
-                usage = fields[4].strip() if len(fields) > 4 else ""
-                if rp_num in rp_map and usage:
-                    if rp_map[rp_num]["usage"]:
-                        rp_map[rp_num]["usage"] += "　" + usage
-                    else:
-                        rp_map[rp_num]["usage"] = usage
-                        
-            elif record_type == '181':
-                # 補足: 181,RP番号,連番,,補足テキスト
-                rp_num = int(fields[1]) if len(fields) > 1 else current_rp
-                note = fields[4].strip() if len(fields) > 4 else ""
-                if rp_num in rp_map and note:
-                    rp_map[rp_num]["notes"] = note
-                    
-            elif record_type == '201':
-                # 薬品: 201,RP番号,連番,枝番,日数,薬品コード,薬品名,数量,単位数,単位
-                rp_num = int(fields[1]) if len(fields) > 1 else current_rp
-                drug = {
-                    "code": fields[5].strip() if len(fields) > 5 else "",
-                    "name": fields[6].strip() if len(fields) > 6 else "",
-                    "quantity": fields[7].strip() if len(fields) > 7 else "",
-                    "unit": fields[9].strip() if len(fields) > 9 else ""
-                }
-                # 【般】を除去してクリーンな薬品名に
-                drug["name_clean"] = re.sub(r'【[^】]*】', '', drug["name"]).strip()
-                
-                if rp_num in rp_map:
-                    rp_map[rp_num]["drugs"].append(drug)
-                    
-        except (ValueError, IndexError) as e:
-            continue
+        # 行5に医療機関名が含まれることがある
+        if record_type == '5':
+            # 末尾に医療機関名がある場合
+            for field in reversed(fields):
+                field = field.strip()
+                if field and re.search(r'(病院|クリニック|医院|科)', field):
+                    # 「0）」等のプレフィックスを除去
+                    clean = re.sub(r'^[\d\)）]+', '', field).strip()
+                    if clean:
+                        result["institution"] = clean
+                    break
     
-    # RP番号順にソート
-    result["prescriptions"] = [rp_map[k] for k in sorted(rp_map.keys())]
+    result["drugs"] = drugs_found
     
-    # 処方要約テキストを生成
+    # 処方要約テキスト生成
     summary_lines = []
-    for rx in result["prescriptions"]:
-        for drug in rx["drugs"]:
-            parts = [f"RP{rx['rp']}: {drug['name_clean']}"]
-            if drug["quantity"] and drug["unit"]:
-                parts.append(f"{drug['quantity']}{drug['unit']}")
-            if rx["usage"]:
-                parts.append(rx["usage"])
-            if rx["notes"]:
-                parts.append(rx["notes"])
-            if rx["days"]:
-                parts.append(f"{rx['days']}日分")
-            summary_lines.append("  ".join(parts))
+    for i, drug in enumerate(drugs_found, 1):
+        summary_lines.append(f"{drug['name_clean']}")
     
     result["drug_summary"] = "\n".join(summary_lines)
     
@@ -221,38 +142,26 @@ def parse_nsips(text: str) -> dict:
 
 def parse_nsips_file(filepath: str) -> dict:
     """ファイルパスからNSIPSデータを読み込んでパース"""
-    with open(filepath, 'r', encoding='shift_jis', errors='replace') as f:
-        text = f.read()
-    return parse_nsips(text)
+    # Shift-JISで試行、失敗したらUTF-8
+    for enc in ['shift_jis', 'cp932', 'utf-8']:
+        try:
+            with open(filepath, 'r', encoding=enc, errors='replace') as f:
+                text = f.read()
+            return parse_nsips(text)
+        except UnicodeDecodeError:
+            continue
+    raise ValueError(f"ファイルのエンコーディングを検出できません: {filepath}")
 
 
 if __name__ == '__main__':
-    # テスト用サンプルデータ
-    sample = """JAHIS10
-1,1,5621206,13,医療法人社団元亨会てらお耳鼻咽喉科
-2,144-0052,大田区蒲田四丁目１番１号　エクセルダイア蒲田ネクスト２階
-3,03-3734-4133,,
-4,2,27,耳鼻咽喉科
-5,,,寺尾　元
-11,,高橋　ハナ,ﾀｶﾊｼ ﾊﾅ
-12,2
-13,20140821
-21,1
-22,06134167
-23,１００,１１２０２,2,01
-27,88135116,7785520
-51,20260130
-101,1,1,,30
-111,1,1,,分２、朝・夕食後服用,
-201,1,1,1,7,4490025F4ZZZ,【般】オロパタジン塩酸塩口腔内崩壊錠５ｍｇ,2,1,Ｔ
-101,2,3,,1
-111,2,1,,１日２回,
-181,2,1,,（点眼両目）,,
-201,2,1,1,7,1319762Q2ZZZ,【般】エピナスチン塩酸塩点眼液０．１％,10,1,ｍＬ
-101,3,3,,1
-111,3,1,,１日１回点鼻※各鼻１回１噴霧寝る前,
-201,3,1,1,7,1329710Q1ZZZ,【般】モメタゾン点鼻液５０μｇ５６噴霧用,1,1,Ｖ"""
-
     import json
-    result = parse_nsips(sample)
+    import sys
+    
+    if len(sys.argv) > 1:
+        filepath = sys.argv[1]
+    else:
+        # テスト: 実際のNSIPSファイル
+        filepath = r'\\VER7\gemini連携\SIPS12\DATA\A99112036056171400000.txt'
+    
+    result = parse_nsips_file(filepath)
     print(json.dumps(result, ensure_ascii=False, indent=2))
