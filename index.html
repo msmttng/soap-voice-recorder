@@ -39,6 +39,18 @@
         <p class="hint">NSIPSから取得した薬品名をペースト、または手入力</p>
       </section>
 
+      <!-- NSIPS患者選択 -->
+      <section id="patientSelectArea" class="card hidden" style="border-color: rgba(37, 99, 235, 0.15);">
+        <div class="card-header">
+          <span class="card-icon">👤</span>
+          <h2>患者選択</h2>
+          <button id="refreshPatientsBtn" class="control-btn" style="margin:0; padding:6px 12px; font-size:12px;">🔄 更新</button>
+        </div>
+        <div id="patientList" style="max-height:200px; overflow-y:auto;">
+          <p class="hint">GAS接続後に患者リストが表示されます</p>
+        </div>
+      </section>
+
       <!-- 録音コントロール -->
       <section class="card recorder-card">
         <div class="recording-visualizer" id="visualizer">

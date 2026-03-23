@@ -3,6 +3,8 @@
  * 
  * 機能:
  *   - SOAPデータをスプレッドシートに保存
+ *   - NSIPSデータ（患者+処方）の受信・保存
+ *   - 患者リストの取得（PWA用）
  *   - 履歴の取得
  * 
  * デプロイ手順:
@@ -20,12 +22,13 @@
 // 設定
 // ============================================
 const SPREADSHEET_ID = ''; // ← 自分のスプレッドシートIDを設定
-const SHEET_NAME = 'SOAP記録';
+const SHEET_SOAP = 'SOAP記録';
+const SHEET_NSIPS = 'NSIPS患者';
 
 /**
- * スプレッドシートを取得（なければシート作成）
+ * シートを取得（なければ作成）
  */
-function getSheet() {
+function getOrCreateSheet(sheetName, headers, columnWidths) {
   let ss;
   if (SPREADSHEET_ID) {
     ss = SpreadsheetApp.openById(SPREADSHEET_ID);
@@ -33,51 +36,48 @@ function getSheet() {
     ss = SpreadsheetApp.getActive();
   }
   
-  let sheet = ss.getSheetByName(SHEET_NAME);
+  let sheet = ss.getSheetByName(sheetName);
   if (!sheet) {
-    sheet = ss.insertSheet(SHEET_NAME);
-    // ヘッダー行を作成
-    sheet.appendRow([
-      'タイムスタンプ', '要約', '処方薬', '録音時間(秒)',
-      'S（主観的情報）', 'O（客観的情報）', 'A（薬学的評価）', 'P（指導計画）',
-      '文字起こし全文'
-    ]);
+    sheet = ss.insertSheet(sheetName);
+    if (headers) sheet.appendRow(headers);
     sheet.setFrozenRows(1);
-    // 列幅の調整
-    sheet.setColumnWidth(1, 160);  // タイムスタンプ
-    sheet.setColumnWidth(2, 150);  // 要約
-    sheet.setColumnWidth(3, 200);  // 処方薬
-    sheet.setColumnWidth(5, 300);  // S
-    sheet.setColumnWidth(6, 300);  // O
-    sheet.setColumnWidth(7, 300);  // A
-    sheet.setColumnWidth(8, 300);  // P
+    if (columnWidths) {
+      columnWidths.forEach((w, i) => { if (w) sheet.setColumnWidth(i + 1, w); });
+    }
   }
   return sheet;
 }
 
+function getSOAPSheet() {
+  return getOrCreateSheet(SHEET_SOAP, 
+    ['タイムスタンプ', '患者名', '要約', '処方薬', '録音時間(秒)',
+     'S（主観的情報）', 'O（客観的情報）', 'A（薬学的評価）', 'P（指導計画）', '文字起こし全文'],
+    [160, 100, 150, 200, 80, 300, 300, 300, 300, 300]
+  );
+}
+
+function getNSIPSSheet() {
+  return getOrCreateSheet(SHEET_NSIPS,
+    ['受信日時', '患者名', 'カナ', '性別', '生年月日', '年齢',
+     '医療機関', '処方医', '処方日', '処方内容', '使用済み', 'JSON'],
+    [160, 100, 120, 40, 100, 40, 200, 80, 100, 400, 60, 100]
+  );
+}
+
 /**
- * POST: SOAPデータを保存
+ * POST: データを保存
  */
 function doPost(e) {
   try {
     const data = JSON.parse(e.postData.contents);
-    const sheet = getSheet();
     
-    sheet.appendRow([
-      new Date().toLocaleString('ja-JP'),
-      data.summary || '',
-      data.drugs || '',
-      data.duration || '',
-      data.S || '',
-      data.O || '',
-      data.A || '',
-      data.P || '',
-      data.transcript || ''
-    ]);
+    // NSIPSデータの場合
+    if (data.action === 'nsips') {
+      return handleNSIPS(data);
+    }
     
-    return ContentService
-      .createTextOutput(JSON.stringify({ success: true, message: '保存しました' }))
-      .setMimeType(ContentService.MimeType.JSON);
+    // SOAPデータの場合
+    return handleSOAP(data);
   } catch (err) {
     return ContentService
       .createTextOutput(JSON.stringify({ success: false, error: err.message }))
@@ -86,7 +86,66 @@ function doPost(e) {
 }
 
 /**
- * GET: 最新の記録を取得
+ * SOAP保存
+ */
+function handleSOAP(data) {
+  const sheet = getSOAPSheet();
+  
+  sheet.appendRow([
+    new Date().toLocaleString('ja-JP'),
+    data.patientName || '',
+    data.summary || '',
+    data.drugs || '',
+    data.duration || '',
+    data.S || '',
+    data.O || '',
+    data.A || '',
+    data.P || '',
+    data.transcript || ''
+  ]);
+  
+  // 対応するNSIPS患者を「使用済み」にマーク
+  if (data.nsipsRow) {
+    try {
+      const nsipsSheet = getNSIPSSheet();
+      nsipsSheet.getRange(data.nsipsRow, 11).setValue('✅');
+    } catch(e) {}
+  }
+  
+  return ContentService
+    .createTextOutput(JSON.stringify({ success: true, message: '保存しました' }))
+    .setMimeType(ContentService.MimeType.JSON);
+}
+
+/**
+ * NSIPS患者データ保存
+ */
+function handleNSIPS(data) {
+  const sheet = getNSIPSSheet();
+  const patient = data.patient || {};
+  
+  sheet.appendRow([
+    new Date().toLocaleString('ja-JP'),
+    patient.name || '',
+    patient.kana || '',
+    patient.gender || '',
+    patient.dob || '',
+    patient.age || '',
+    data.institution || '',
+    data.doctor || '',
+    data.prescription_date || '',
+    data.drug_summary || '',
+    '',  // 使用済みフラグ（初期値: 空）
+    JSON.stringify(data)
+  ]);
+  
+  return ContentService
+    .createTextOutput(JSON.stringify({ success: true, message: '患者データを登録しました' }))
+    .setMimeType(ContentService.MimeType.JSON);
+}
+
+/**
+ * GET: データ取得
  */
 function doGet(e) {
   try {
@@ -98,7 +157,13 @@ function doGet(e) {
         .setMimeType(ContentService.MimeType.JSON);
     }
     
-    const sheet = getSheet();
+    // 未使用の患者リストを取得（PWA用）
+    if (action === 'patients') {
+      return handleGetPatients();
+    }
+    
+    // SOAP履歴
+    const sheet = getSOAPSheet();
     const data = sheet.getDataRange().getValues();
     const headers = data[0];
     const records = data.slice(1).reverse().slice(0, 20).map(row => {
@@ -115,4 +180,38 @@ function doGet(e) {
       .createTextOutput(JSON.stringify({ success: false, error: err.message }))
       .setMimeType(ContentService.MimeType.JSON);
   }
+}
+
+/**
+ * 未使用の患者リストを返す
+ */
+function handleGetPatients() {
+  const sheet = getNSIPSSheet();
+  const data = sheet.getDataRange().getValues();
+  const headers = data[0];
+  
+  const patients = [];
+  for (let i = 1; i < data.length; i++) {
+    const row = data[i];
+    const usedFlag = row[10]; // 使用済みカラム
+    
+    if (!usedFlag) {  // 未使用のみ
+      patients.push({
+        row: i + 1,  // スプレッドシートの行番号（1-indexed）
+        name: row[1],
+        kana: row[2],
+        gender: row[3],
+        dob: row[4],
+        age: row[5],
+        institution: row[6],
+        doctor: row[7],
+        prescription_date: row[8],
+        drug_summary: row[9]
+      });
+    }
+  }
+  
+  return ContentService
+    .createTextOutput(JSON.stringify({ success: true, patients: patients.reverse() }))
+    .setMimeType(ContentService.MimeType.JSON);
 }

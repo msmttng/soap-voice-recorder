@@ -432,7 +432,7 @@ const GASClient = {
   /**
    * SOAPデータをGASに保存
    */
-  async saveSOAP(soapData, drugInfo, duration) {
+  async saveSOAP(soapData, drugInfo, duration, patientName, nsipsRow) {
     const settings = Config.load();
     if (!settings.gasUrl) {
       console.log('[GAS] URL not configured, skipping cloud save');
@@ -447,7 +447,9 @@ const GASClient = {
       transcript: soapData.transcript || '',
       summary: soapData.summary || '',
       drugs: drugInfo || '',
-      duration: duration || 0
+      duration: duration || 0,
+      patientName: patientName || '',
+      nsipsRow: nsipsRow || null
     };
 
     try {
@@ -512,6 +514,7 @@ const App = {
   recorder: null,
   currentSOAP: null,
   waveformAnimId: null,
+  selectedPatient: null,  // NSIPS選択中の患者
 
   init() {
     this.recorder = new AudioRecorder();
@@ -520,6 +523,7 @@ const App = {
     this.renderHistory();
     this.initCanvas();
     this.checkSpeechSupport();
+    this.loadPatients();
     console.log('[App] Initialized');
   },
 
@@ -541,6 +545,7 @@ const App = {
 
     document.getElementById('saveSettingsBtn').addEventListener('click', () => this.saveSettings());
     document.getElementById('testConnectionBtn').addEventListener('click', () => this.testConnection());
+    document.getElementById('refreshPatientsBtn').addEventListener('click', () => this.loadPatients());
 
     document.getElementById('copyAllBtn').addEventListener('click', () => this.copySOAP());
     document.getElementById('copySOAPBtn').addEventListener('click', () => this.copySOAP());
@@ -932,6 +937,62 @@ const App = {
     }
   },
 
+  // --- NSIPS 患者選択 ---
+  async loadPatients() {
+    const settings = Config.load();
+    if (!settings.gasUrl) {
+      document.getElementById('patientSelectArea').classList.add('hidden');
+      return;
+    }
+
+    try {
+      const response = await fetch(`${settings.gasUrl}?action=patients`);
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const data = await response.json();
+      
+      if (data.success && data.patients && data.patients.length > 0) {
+        document.getElementById('patientSelectArea').classList.remove('hidden');
+        this.renderPatients(data.patients);
+      } else {
+        document.getElementById('patientSelectArea').classList.add('hidden');
+      }
+    } catch (err) {
+      console.warn('[App] Patient list fetch failed:', err);
+      document.getElementById('patientSelectArea').classList.add('hidden');
+    }
+  },
+
+  renderPatients(patients) {
+    const list = document.getElementById('patientList');
+    if (patients.length === 0) {
+      list.innerHTML = '<p class="hint">待機中の患者はいません</p>';
+      return;
+    }
+
+    list.innerHTML = patients.map(p => `
+      <div class="history-item" onclick="App.selectPatient(${JSON.stringify(p).replace(/"/g, '&quot;')})" 
+           style="cursor:pointer; ${this.selectedPatient && this.selectedPatient.row === p.row ? 'border-color:var(--accent); background:var(--accent-glow);' : ''}">
+        <div class="history-item-info">
+          <h4>👤 ${p.name} ${p.kana ? `(${p.kana})` : ''} ${p.gender || ''} ${p.age ? p.age + '歳' : ''}</h4>
+          <p style="font-size:11px; color:var(--text-muted); white-space:pre-line; margin-top:4px;">${(p.drug_summary || '').substring(0, 100)}</p>
+        </div>
+        <span style="font-size:11px; color:var(--text-muted);">${p.prescription_date || ''}</span>
+      </div>
+    `).join('');
+  },
+
+  selectPatient(patient) {
+    this.selectedPatient = patient;
+    
+    // 処方薬情報を自動入力
+    document.getElementById('drugInput').value = patient.drug_summary || '';
+    
+    // 患者選択UIを更新
+    this.loadPatients().then(() => {
+      this.toast(`👤 ${patient.name} さんを選択しました`);
+    });
+  },
+
   togglePause() {
     if (this.recorder.isPaused) {
       this.recorder.resume();
@@ -1040,10 +1101,16 @@ const App = {
     
     // GASにクラウド保存を試行
     const drugInfo = document.getElementById('drugInput').value.trim();
+    const patientName = this.selectedPatient ? this.selectedPatient.name : '';
+    const nsipsRow = this.selectedPatient ? this.selectedPatient.row : null;
+    
     try {
-      const result = await GASClient.saveSOAP(this.currentSOAP, drugInfo, this.recorder.getElapsedTime());
+      const result = await GASClient.saveSOAP(
+        this.currentSOAP, drugInfo, this.recorder.getElapsedTime(),
+        patientName, nsipsRow
+      );
       if (result) {
-        this.toast('💾 ☁️ クラウドに保存しました');
+        this.toast(`💾 ☁️ ${patientName ? patientName + 'さんの' : ''}SOAPを保存しました`);
       } else {
         this.toast('💾 ローカルに保存しました（GAS未設定）');
       }
@@ -1051,6 +1118,11 @@ const App = {
       console.warn('[App] Cloud save failed:', err);
       this.toast('💾 ローカル保存済み（クラウド保存失敗）');
     }
+    
+    // 患者選択をリセット
+    this.selectedPatient = null;
+    this.loadPatients();
+    
     this.showScreen('recordScreen');
   },
 
