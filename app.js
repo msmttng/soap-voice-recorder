@@ -37,35 +37,64 @@ const Config = {
 };
 
 // ==============================================
-// リアルタイム音声認識（Web Speech API）
+// リアルタイム音声認識（Web Speech API）— 安定性強化版
 // ==============================================
 const SpeechTranscriber = {
   recognition: null,
   isListening: false,
   fullTranscript: '',       // 確定済みテキスト
   interimTranscript: '',    // 認識中テキスト
-  onUpdate: null,           // コールバック
+  onUpdate: null,           // テキスト更新コールバック
+  onStatusChange: null,     // ステータス変更コールバック
+
+  // 指数バックオフ再起動制御
+  _retryCount: 0,
+  _maxRetries: 10,
+  _baseDelay: 200,         // 初回 200ms
+  _maxDelay: 5000,         // 最大 5秒
+  _retryTimer: null,
 
   /**
    * 音声認識を開始
    */
-  start(onUpdate) {
+  start(onUpdate, onStatusChange) {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognition) {
-      throw new Error('このブラウザは音声認識に対応していません。Chrome または Safari を使用してください。');
+      throw new Error('このブラウザは音声認識に対応していません。Chrome を使用してください。');
     }
 
+    this.fullTranscript = '';
+    this.interimTranscript = '';
+    this.onUpdate = onUpdate;
+    this.onStatusChange = onStatusChange;
+    this._retryCount = 0;
+
+    this._createRecognition();
+    this.recognition.start();
+    this.isListening = true;
+    this._emitStatus('listening', '音声認識中');
+    console.log('[Speech] Started');
+  },
+
+  /**
+   * SpeechRecognition インスタンスを作成・設定
+   */
+  _createRecognition() {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     this.recognition = new SpeechRecognition();
     this.recognition.lang = 'ja-JP';
     this.recognition.continuous = true;
     this.recognition.interimResults = true;
     this.recognition.maxAlternatives = 1;
 
-    this.fullTranscript = '';
-    this.interimTranscript = '';
-    this.onUpdate = onUpdate;
-
     this.recognition.onresult = (event) => {
+      // 結果を受信 → リトライカウンタリセット
+      if (this._retryCount > 0) {
+        console.log(`[Speech] Result received — retry count reset (was ${this._retryCount})`);
+        this._retryCount = 0;
+        this._emitStatus('listening', '音声認識中');
+      }
+
       let interim = '';
       for (let i = event.resultIndex; i < event.results.length; i++) {
         const transcript = event.results[i][0].transcript;
@@ -85,26 +114,48 @@ const SpeechTranscriber = {
 
     this.recognition.onerror = (event) => {
       console.warn('[Speech] Error:', event.error);
-      // 'no-speech' は無視（無音期間で発生する）
+      // 'no-speech' と 'aborted' は無視（無音期間やstop時に発生）
       if (event.error === 'no-speech') return;
       if (event.error === 'aborted') return;
+      // network エラーは再起動で回復を試みる
+      if (event.error === 'network') {
+        this._emitStatus('restarting', 'ネットワークエラー — 再起動中...');
+        return;
+      }
+      this._emitStatus('error', `音声認識エラー: ${event.error}`);
     };
 
     this.recognition.onend = () => {
-      // continuous=true でも停止することがあるので自動再開
-      if (this.isListening) {
-        console.log('[Speech] Auto-restart');
+      // continuous=true でも停止することがあるので自動再開（指数バックオフ）
+      if (!this.isListening) return;
+
+      if (this._retryCount >= this._maxRetries) {
+        console.error(`[Speech] Max retries (${this._maxRetries}) reached — giving up`);
+        this._emitStatus('stopped', `音声認識が${this._maxRetries}回再起動に失敗しました。手動入力に切り替えてください。`);
+        this.isListening = false;
+        return;
+      }
+
+      const delay = Math.min(this._baseDelay * Math.pow(2, this._retryCount), this._maxDelay);
+      this._retryCount++;
+
+      console.log(`[Speech] Auto-restart #${this._retryCount} in ${delay}ms`);
+      this._emitStatus('restarting', `再起動中... (${this._retryCount}/${this._maxRetries})`);
+
+      this._retryTimer = setTimeout(() => {
+        if (!this.isListening) return;
         try {
+          // 古いインスタンスを破棄して新しく作り直す
+          this._createRecognition();
           this.recognition.start();
+          console.log(`[Speech] Restart #${this._retryCount} succeeded`);
+          this._emitStatus('listening', '音声認識中（再起動済み）');
         } catch(e) {
           console.warn('[Speech] Restart failed:', e);
+          // onend が再度呼ばれるので、次のリトライに委ねる
         }
-      }
+      }, delay);
     };
-
-    this.recognition.start();
-    this.isListening = true;
-    console.log('[Speech] Started');
   },
 
   /**
@@ -112,12 +163,38 @@ const SpeechTranscriber = {
    */
   stop() {
     this.isListening = false;
+    if (this._retryTimer) {
+      clearTimeout(this._retryTimer);
+      this._retryTimer = null;
+    }
     if (this.recognition) {
-      this.recognition.stop();
+      try { this.recognition.stop(); } catch(e) {}
       this.recognition = null;
     }
+    this._emitStatus('stopped', '音声認識停止');
     console.log('[Speech] Stopped');
     return this.fullTranscript;
+  },
+
+  /**
+   * バックグラウンド復帰時に音声認識を再開
+   */
+  recover() {
+    if (!this.isListening) return;
+    console.log('[Speech] Attempting recovery...');
+    try {
+      if (this.recognition) {
+        try { this.recognition.stop(); } catch(e) {}
+      }
+      this._retryCount = 0;
+      this._createRecognition();
+      this.recognition.start();
+      this._emitStatus('listening', '音声認識復旧');
+      console.log('[Speech] ✅ Recovery succeeded');
+    } catch(e) {
+      console.warn('[Speech] Recovery failed:', e);
+      this._emitStatus('error', '音声認識の復旧に失敗しました');
+    }
   },
 
   /**
@@ -125,6 +202,13 @@ const SpeechTranscriber = {
    */
   getCurrentText() {
     return this.fullTranscript + this.interimTranscript;
+  },
+
+  _emitStatus(status, detail) {
+    console.log(`[Speech] Status: ${status} — ${detail}`);
+    if (typeof this.onStatusChange === 'function') {
+      try { this.onStatusChange(status, detail); } catch(e) {}
+    }
   }
 };
 
@@ -342,6 +426,67 @@ ${drugSection}
 };
 
 // ==============================================
+// GAS バックエンドクライアント
+// ==============================================
+const GASClient = {
+  /**
+   * SOAPデータをGASに保存
+   */
+  async saveSOAP(soapData, drugInfo, duration) {
+    const settings = Config.load();
+    if (!settings.gasUrl) {
+      console.log('[GAS] URL not configured, skipping cloud save');
+      return null;
+    }
+
+    const payload = {
+      S: soapData.S || '',
+      O: soapData.O || '',
+      A: soapData.A || '',
+      P: soapData.P || '',
+      transcript: soapData.transcript || '',
+      summary: soapData.summary || '',
+      drugs: drugInfo || '',
+      duration: duration || 0
+    };
+
+    try {
+      const response = await fetch(settings.gasUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        mode: 'no-cors' // GAS requires no-cors for POST
+      });
+
+      // no-cors の場合 response.ok は常に false なので opaque response をチェック
+      console.log('[GAS] ✅ Save request sent');
+      return { success: true };
+    } catch (err) {
+      console.error('[GAS] Save failed:', err);
+      throw new Error(`クラウド保存に失敗: ${err.message}`);
+    }
+  },
+
+  /**
+   * 接続テスト
+   */
+  async testConnection() {
+    const settings = Config.load();
+    if (!settings.gasUrl) throw new Error('GAS URLが設定されていません');
+
+    try {
+      const response = await fetch(`${settings.gasUrl}?action=ping`);
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const data = await response.json();
+      if (!data.success) throw new Error(data.error || '不明なエラー');
+      return true;
+    } catch (err) {
+      throw new Error(`GAS接続エラー: ${err.message}`);
+    }
+  }
+};
+
+// ==============================================
 // 履歴管理
 // ==============================================
 const History = {
@@ -508,16 +653,36 @@ const App = {
     try {
       // マイク録音開始（波形表示 + 音声バックアップ用）
       await this.recorder.start();
-      this.lastRecording = null; // 録音結果を保持するための変数
+      this.lastRecording = null;
+
+      // レコーダーのステータス変更をUIに反映
+      this.recorder.onStatusChange = (status, detail) => {
+        this.updateRecorderStatus(status, detail);
+      };
 
       // リアルタイム音声認識も同時開始（失敗しても録音は続行）
       try {
-        SpeechTranscriber.start((final, interim) => {
-          this.updateLiveTranscript(final, interim);
-        });
+        SpeechTranscriber.start(
+          (final, interim) => {
+            this.updateLiveTranscript(final, interim);
+          },
+          (status, detail) => {
+            this.updateSpeechStatus(status, detail);
+          }
+        );
       } catch (speechErr) {
         console.warn('[App] Speech API not available:', speechErr);
       }
+
+      // visibilitychange で Speech API も復旧
+      this._visibilityRecovery = () => {
+        if (document.visibilityState === 'visible' && this.recorder.isRecording) {
+          console.log('[App] Page visible — recovering Speech API');
+          SpeechTranscriber.recover();
+          this.toast('🔄 バックグラウンドから復帰しました');
+        }
+      };
+      document.addEventListener('visibilitychange', this._visibilityRecovery);
       
       // UI更新
       const btn = document.getElementById('recordBtn');
@@ -531,8 +696,11 @@ const App = {
       document.getElementById('liveTranscriptArea').classList.remove('hidden');
       document.getElementById('liveTranscriptText').textContent = '🎤 音声を認識中...';
       
+      // ステータスバッジを初期化
+      this.updateSpeechStatus('listening', '音声認識中');
+      
       this.startWaveformAnimation();
-      this.toast('🎙️ 録音開始');
+      this.toast('🎙️ 録音開始（画面ロック防止ON）');
     } catch (err) {
       this.toast(`❌ ${err.message}`, 'error');
     }
@@ -548,7 +716,15 @@ const App = {
       let transcript = '';
       try {
         transcript = SpeechTranscriber.stop();
-      } catch(e) {}
+      } catch(e) {
+        console.warn('[App] SpeechTranscriber.stop() error:', e);
+      }
+
+      // visibilitychange リスナー解除
+      if (this._visibilityRecovery) {
+        document.removeEventListener('visibilitychange', this._visibilityRecovery);
+        this._visibilityRecovery = null;
+      }
       
       // UI復帰
       const btn = document.getElementById('recordBtn');
@@ -595,7 +771,7 @@ const App = {
         <label style="font-size:13px; font-weight:500; color:var(--text-primary); display:block; margin-bottom:6px;">
           ✍️ 方法1: 会話内容を手入力
         </label>
-        <textarea id="manualTranscript" rows="4" style="width:100%; background:var(--bg-input); border:1px solid rgba(255,255,255,0.08); border-radius:8px; padding:12px; color:var(--text-primary); font-family:var(--font-main); font-size:14px; resize:vertical;" 
+        <textarea id="manualTranscript" rows="4" style="width:100%; background:var(--bg-input); border:1px solid rgba(0,0,0,0.08); border-radius:8px; padding:12px; color:var(--text-primary); font-family:var(--font-main); font-size:14px; resize:vertical;" 
           placeholder="患者との会話の要点を入力してください&#10;例: 患者「最近血圧が高くて...」&#10;薬剤師「お薬はちゃんと飲めていますか？」"></textarea>
       </div>
       <button id="submitManualBtn" class="action-btn primary-btn" style="margin-bottom:8px;">
@@ -720,6 +896,42 @@ const App = {
     }
   },
 
+  /**
+   * 音声認識ステータスをUIに反映
+   */
+  updateSpeechStatus(status, detail) {
+    const statusEl = document.getElementById('speechStatus');
+    if (!statusEl) return;
+
+    const statusMap = {
+      'listening':   { icon: '🟢', text: '認識中' },
+      'restarting':  { icon: '🟡', text: '再起動中...' },
+      'stopped':     { icon: '🔴', text: '停止' },
+      'error':       { icon: '🔴', text: 'エラー' }
+    };
+    const s = statusMap[status] || { icon: '⚪', text: status };
+    statusEl.textContent = `${s.icon} ${s.text}`;
+    statusEl.title = detail || '';
+
+    // 停止・エラー時にtoast通知
+    if (status === 'stopped' || status === 'error') {
+      this.toast(`⚠️ ${detail}`, 'error');
+    }
+  },
+
+  /**
+   * レコーダーステータスをUIに反映
+   */
+  updateRecorderStatus(status, detail) {
+    if (status === 'wake-lock-lost') {
+      this.toast('⚠️ 画面ロック防止が解除されました。画面をタップして復旧してください。', 'error');
+    } else if (status === 'resumed') {
+      this.toast(`🔄 ${detail}`);
+    } else if (status === 'error') {
+      this.toast(`❌ 録音エラー: ${detail}`, 'error');
+    }
+  },
+
   togglePause() {
     if (this.recorder.isPaused) {
       this.recorder.resume();
@@ -823,9 +1035,22 @@ const App = {
     this.copySOAP();
   },
 
-  saveSOAP() {
+  async saveSOAP() {
     if (!this.currentSOAP) return;
-    this.toast('💾 保存しました');
+    
+    // GASにクラウド保存を試行
+    const drugInfo = document.getElementById('drugInput').value.trim();
+    try {
+      const result = await GASClient.saveSOAP(this.currentSOAP, drugInfo, this.recorder.getElapsedTime());
+      if (result) {
+        this.toast('💾 ☁️ クラウドに保存しました');
+      } else {
+        this.toast('💾 ローカルに保存しました（GAS未設定）');
+      }
+    } catch (err) {
+      console.warn('[App] Cloud save failed:', err);
+      this.toast('💾 ローカル保存済み（クラウド保存失敗）');
+    }
     this.showScreen('recordScreen');
   },
 
@@ -854,8 +1079,30 @@ const App = {
   async testConnection() {
     try {
       this.toast('🔗 接続テスト中...');
-      await GeminiClient.testConnection();
-      this.toast('✅ 接続成功！APIキーは有効です');
+      const results = [];
+      
+      // Gemini API テスト
+      try {
+        await GeminiClient.testConnection();
+        results.push('✅ Gemini API: OK');
+      } catch (err) {
+        results.push(`❌ Gemini: ${err.message}`);
+      }
+      
+      // GAS テスト
+      const settings = Config.load();
+      if (settings.gasUrl) {
+        try {
+          await GASClient.testConnection();
+          results.push('✅ GAS: OK');
+        } catch (err) {
+          results.push(`❌ GAS: ${err.message}`);
+        }
+      } else {
+        results.push('⚪ GAS: 未設定');
+      }
+      
+      this.toast(results.join('\n'));
     } catch (err) {
       this.toast(`❌ ${err.message}`, 'error');
     }
@@ -902,7 +1149,7 @@ const App = {
     const el = document.getElementById('toast');
     el.textContent = message;
     el.className = 'toast show';
-    el.style.borderColor = type === 'error' ? 'var(--danger)' : 'rgba(255,255,255,0.1)';
+    el.style.borderColor = type === 'error' ? 'var(--danger)' : 'rgba(0,0,0,0.08)';
     setTimeout(() => { el.className = 'toast'; }, 3500);
   }
 };

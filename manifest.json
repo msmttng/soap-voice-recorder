@@ -4,8 +4,8 @@
   "description": "服薬指導音声からSOAP薬歴を自動生成",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#0a0a1a",
-  "theme_color": "#0a0a1a",
+  "background_color": "#f5f7fa",
+  "theme_color": "#f5f7fa",
   "orientation": "portrait",
   "icons": [
     {

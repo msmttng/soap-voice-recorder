@@ -1,5 +1,10 @@
 /**
- * recorder.js — iPhone Safari対応の音声録音モジュール
+ * recorder.js — 録音安定性強化版 音声録音モジュール
+ * 
+ * 改善点:
+ *   - Wake Lock API で画面ロック防止（Android Chrome対応）
+ *   - visibilitychange で AudioContext / MediaRecorder を自動復旧
+ *   - ステータスコールバックでUI側に状態を通知
  */
 class AudioRecorder {
   constructor() {
@@ -12,14 +17,25 @@ class AudioRecorder {
     this.audioContext = null;
     this.isRecording = false;
     this.isPaused = false;
+    this._chunkIndex = 0;  // IndexedDBバックアップ用カウンタ
+
+    // Wake Lock
+    this.wakeLock = null;
+
+    // ステータスコールバック: (status, detail) => void
+    // status: 'recording' | 'suspended' | 'resumed' | 'wake-lock-lost' | 'error'
+    this.onStatusChange = null;
+
+    // visibilitychange ハンドラの参照を保持（removeEventListener用）
+    this._visibilityHandler = this._handleVisibilityChange.bind(this);
   }
 
   /**
-   * iPhone Safari対応のMIME型を検出
+   * MIME型を検出（Android Chrome優先）
    */
   getPreferredMimeType() {
     const types = [
-      'audio/webm;codecs=opus',   // iPhone Safari 推奨
+      'audio/webm;codecs=opus',
       'audio/webm',
       'audio/mp4',
       'audio/ogg;codecs=opus',
@@ -45,8 +61,7 @@ class AudioRecorder {
         audio: {
           echoCancellation: true,
           noiseSuppression: true,
-          autoGainControl: true,
-          sampleRate: 16000 // Whisper/Gemini推奨
+          autoGainControl: true
         }
       });
 
@@ -66,7 +81,17 @@ class AudioRecorder {
       this.mediaRecorder.ondataavailable = (event) => {
         if (event.data && event.data.size > 0) {
           this.audioChunks.push(event.data);
+          // IndexedDB にバックアップ
+          if (window.RecordingBackup) {
+            RecordingBackup.saveChunk(event.data, this._chunkIndex++).catch(() => {});
+          }
         }
+      };
+
+      // MediaRecorderの予期しない停止を検知
+      this.mediaRecorder.onerror = (event) => {
+        console.error('[Recorder] MediaRecorder error:', event.error);
+        this._emitStatus('error', `MediaRecorder: ${event.error?.name || 'unknown'}`);
       };
 
       // 1秒ごとにチャンクを収集（安定性向上）
@@ -74,8 +99,21 @@ class AudioRecorder {
       this.isRecording = true;
       this.isPaused = false;
       this.startTime = Date.now();
+      this._chunkIndex = 0;
       this._startTimer();
 
+      // IndexedDB バックアップセッション開始
+      if (window.RecordingBackup) {
+        RecordingBackup.startSession().catch(() => {});
+      }
+
+      // Wake Lock 取得
+      await this._acquireWakeLock();
+
+      // visibilitychange リスナー登録
+      document.addEventListener('visibilitychange', this._visibilityHandler);
+
+      this._emitStatus('recording', '録音開始');
       console.log('[Recorder] Recording started');
       return true;
     } catch (err) {
@@ -97,6 +135,7 @@ class AudioRecorder {
       this.mediaRecorder.pause();
       this.isPaused = true;
       this._stopTimer();
+      this._emitStatus('suspended', '一時停止');
       console.log('[Recorder] Paused');
     }
   }
@@ -109,6 +148,7 @@ class AudioRecorder {
       this.mediaRecorder.resume();
       this.isPaused = false;
       this._startTimer();
+      this._emitStatus('resumed', '録音再開');
       console.log('[Recorder] Resumed');
     }
   }
@@ -140,6 +180,17 @@ class AudioRecorder {
         this.isRecording = false;
         this.isPaused = false;
         this._stopTimer();
+
+        // Wake Lock 解放
+        this._releaseWakeLock();
+
+        // visibilitychange リスナー解除
+        document.removeEventListener('visibilitychange', this._visibilityHandler);
+
+        // IndexedDB バックアップをクリア（正常停止なので不要）
+        if (window.RecordingBackup) {
+          RecordingBackup.clear().catch(() => {});
+        }
 
         const duration = this.getElapsedTime();
         console.log(`[Recorder] Stopped. Duration: ${duration}s, Size: ${(audioBlob.size / 1024).toFixed(1)}KB`);
@@ -206,7 +257,6 @@ class AudioRecorder {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.onloadend = () => {
-        // 'data:audio/webm;base64,...' から base64部分だけ取得
         const base64 = reader.result.split(',')[1];
         resolve(base64);
       };
@@ -215,7 +265,97 @@ class AudioRecorder {
     });
   }
 
-  // --- Private ---
+  // =========================================
+  //  Wake Lock API
+  // =========================================
+
+  async _acquireWakeLock() {
+    if (!('wakeLock' in navigator)) {
+      console.warn('[Recorder] Wake Lock API not supported');
+      return;
+    }
+    try {
+      this.wakeLock = await navigator.wakeLock.request('screen');
+      console.log('[Recorder] ✅ Wake Lock acquired');
+
+      this.wakeLock.addEventListener('release', () => {
+        console.log('[Recorder] Wake Lock released');
+        // 録音中にWake Lockが失われた場合は通知
+        if (this.isRecording) {
+          this._emitStatus('wake-lock-lost', '画面ロック防止が解除されました');
+        }
+      });
+    } catch (err) {
+      console.warn('[Recorder] Wake Lock failed:', err.message);
+    }
+  }
+
+  _releaseWakeLock() {
+    if (this.wakeLock) {
+      this.wakeLock.release().catch(() => {});
+      this.wakeLock = null;
+      console.log('[Recorder] Wake Lock released (manual)');
+    }
+  }
+
+  // =========================================
+  //  Visibility Change — バックグラウンド復旧
+  // =========================================
+
+  async _handleVisibilityChange() {
+    if (!this.isRecording) return;
+
+    if (document.visibilityState === 'visible') {
+      console.log('[Recorder] Page became visible — recovering...');
+
+      // AudioContext 復旧
+      if (this.audioContext && this.audioContext.state === 'suspended') {
+        try {
+          await this.audioContext.resume();
+          console.log('[Recorder] ✅ AudioContext resumed');
+        } catch (e) {
+          console.warn('[Recorder] AudioContext resume failed:', e);
+        }
+      }
+
+      // MediaRecorder 復旧（paused → resume）
+      if (this.mediaRecorder && this.mediaRecorder.state === 'paused') {
+        try {
+          this.mediaRecorder.resume();
+          console.log('[Recorder] ✅ MediaRecorder resumed from paused');
+        } catch (e) {
+          console.warn('[Recorder] MediaRecorder resume failed:', e);
+        }
+      }
+
+      // Wake Lock 再取得
+      if (!this.wakeLock) {
+        await this._acquireWakeLock();
+      }
+
+      this._emitStatus('resumed', 'バックグラウンドから復帰');
+    } else {
+      // バックグラウンドに移行
+      console.log('[Recorder] Page hidden — recording may be affected');
+      this._emitStatus('suspended', 'バックグラウンド移行');
+    }
+  }
+
+  // =========================================
+  //  ステータス通知
+  // =========================================
+
+  _emitStatus(status, detail) {
+    console.log(`[Recorder] Status: ${status} — ${detail}`);
+    if (typeof this.onStatusChange === 'function') {
+      try { this.onStatusChange(status, detail); } catch (e) {}
+    }
+  }
+
+  // =========================================
+  //  Timer
+  // =========================================
+
   _startTimer() {
     this._stopTimer();
     this.timerInterval = setInterval(() => {

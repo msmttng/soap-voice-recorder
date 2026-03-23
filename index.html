@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <meta name="theme-color" content="#0a0a1a">
+  <meta name="theme-color" content="#f5f7fa">
   <title>SOAP Voice Recorder</title>
   <link rel="manifest" href="manifest.json">
   <link rel="apple-touch-icon" href="icons/icon-192.png">
@@ -74,7 +74,7 @@
         <div class="card-header">
           <span class="card-icon">📝</span>
           <h2>リアルタイム文字起こし</h2>
-          <span style="font-size:11px; color:var(--success); margin-left:auto;">● LIVE</span>
+          <span id="speechStatus" style="font-size:11px; margin-left:auto; cursor:help;">🟢 認識中</span>
         </div>
         <div id="liveTranscriptText" style="font-size:14px; line-height:1.7; color:var(--text-primary); max-height:150px; overflow-y:auto; white-space:pre-wrap;">
           🎤 音声を認識中...
@@ -82,12 +82,12 @@
       </section>
 
       <!-- テキスト直接入力でSOAP生成 -->
-      <section class="card" style="border-color: rgba(52, 211, 153, 0.2);">
+      <section class="card" style="border-color: rgba(52, 211, 153, 0.15);">
         <div class="card-header">
           <span class="card-icon">✍️</span>
           <h2>テキストからSOAP生成</h2>
         </div>
-        <textarea id="manualTranscriptInput" placeholder="会話内容を入力してください&#10;例:&#10;患者「最近血圧が高くて心配です」&#10;薬剤師「お薬はきちんと飲めていますか？」&#10;患者「朝はたまに忘れてしまいます」" rows="5" style="width:100%; background:var(--bg-input); border:1px solid rgba(255,255,255,0.08); border-radius:10px; padding:14px 16px; color:var(--text-primary); font-family:var(--font-main); font-size:14px; line-height:1.6; resize:vertical;"></textarea>
+        <textarea id="manualTranscriptInput" placeholder="会話内容を入力してください&#10;例:&#10;患者「最近血圧が高くて心配です」&#10;薬剤師「お薬はきちんと飲めていますか？」&#10;患者「朝はたまに忘れてしまいます」" rows="5" style="width:100%; background:var(--bg-input); border:1px solid rgba(0,0,0,0.08); border-radius:10px; padding:14px 16px; color:var(--text-primary); font-family:var(--font-main); font-size:14px; line-height:1.6; resize:vertical;"></textarea>
         <p class="hint" style="margin-bottom:12px;">録音の代わりに、会話内容をテキストで入力できます</p>
         <button id="generateFromTextBtn" class="action-btn primary-btn">
           🧠 この内容でSOAP生成
@@ -253,6 +253,7 @@
     <div id="toast" class="toast hidden"></div>
   </div>
 
+  <script src="recording-backup.js"></script>
   <script src="recorder.js"></script>
   <script src="app.js"></script>
 </body>
