@@ -1,97 +1,97 @@
 /**
- * メディクス薬歴 ブックマークレット
+ * メディクス薬歴 ブックマークレット — 改善版
  * 
  * 使い方:
- * 1. PWAで「メディクスへ送信」ボタンを押す
- * 2. メディクスの薬歴入力画面を開く
- * 3. このブックマークレットを実行する
+ *   1. PWAで「SOAPをコピー」ボタンを押す
+ *   2. メディクスの薬歴入力画面を開く
+ *   3. このブックマークレットを実行する
  * 
- * ブックマークレットとして登録する際は、以下のコードを
- * ブラウザのブックマークURLに貼り付けてください。
- * 
- * 注意: メディクスのDOM構造に合わせてセレクタを調整する必要があります。
- * 初回は開発者ツール（F12）でメディクスの入力フィールドのセレクタを確認してください。
+ * ブックマークへの登録方法:
+ *   1. 以下のコード全体を選択
+ *   2. ブラウザのブックマークバーを右クリック → 「ページを追加」
+ *   3. 名前: 「SOAP入力」
+ *   4. URL: 以下のコードを貼り付け
+ *
+ * セレクタの調整方法:
+ *   1. メディクスの薬歴入力画面を開く
+ *   2. F12 で開発者ツールを開く
+ *   3. S/O/A/P 各フィールドを右クリック → 「検証」
+ *   4. textarea や input のセレクタを確認
+ *   5. 下記 SELECTORS を書き換え
  */
-
-// === ブックマークレット本体 ===
-// 以下を1行にまとめてブックマークのURLに設定:
 
 javascript:(function(){
   'use strict';
   
   /* ==========================================
      設定: メディクスのDOM要素セレクタ
-     ※ 実際の画面に合わせて変更してください
      ========================================== */
   const SELECTORS = {
-    // テキストエリアのセレクタ（例）
-    // メディクスの実際のフィールドに合わせて変更
-    S: 'textarea[name="subjective"], #subjective, [data-field="S"]',
-    O: 'textarea[name="objective"], #objective, [data-field="O"]',
-    A: 'textarea[name="assessment"], #assessment, [data-field="A"]',
-    P: 'textarea[name="plan"], #plan, [data-field="P"]',
+    // 薬歴入力のSOAP各フィールド
+    // ※ メディクスの実際のフィールドに合わせて変更してください
+    // 複数セレクタをカンマ区切りで指定（上から順に試行）
+    S: 'textarea[name="subjective"], #subjective, [data-field="S"], textarea:nth-of-type(1)',
+    O: 'textarea[name="objective"], #objective, [data-field="O"], textarea:nth-of-type(2)',
+    A: 'textarea[name="assessment"], #assessment, [data-field="A"], textarea:nth-of-type(3)',
+    P: 'textarea[name="plan"], #plan, [data-field="P"], textarea:nth-of-type(4)',
   };
 
   /* ==========================================
-     SOAPデータの取得
+     SOAPデータの取得（クリップボードから）
      ========================================== */
-  
-  // 方法1: localStorageから取得（同一ドメインの場合）
-  let soapData = null;
-  try {
-    const stored = localStorage.getItem('soap_medixs_data');
-    if (stored) {
-      soapData = JSON.parse(stored);
+  async function getSOAPData() {
+    // 方法1: クリップボードからの自動取得を試みる
+    try {
+      const clipText = await navigator.clipboard.readText();
+      if (clipText && clipText.includes('【S】')) {
+        const parsed = parseSOAP(clipText);
+        if (Object.keys(parsed).length > 0) {
+          return parsed;
+        }
+      }
+    } catch(e) {
+      // clipboard API が使えない場合はスキップ
     }
-  } catch(e) {}
-
-  // 方法2: クリップボードから取得（異なるドメインの場合）
-  if (!soapData) {
+    
+    // 方法2: ダイアログで手動貼り付け
     const clipText = prompt(
       'SOAPデータを貼り付けてください\n\n' +
-      '（PWAで「SOAPをコピー」ボタンを押してから、ここに貼り付け）',
+      '（PWAで「SOAPをコピー」ボタンを押してから、Ctrl+V で貼り付け）',
       ''
     );
     
-    if (!clipText) {
-      alert('キャンセルされました');
-      return;
-    }
+    if (!clipText) return null;
     
-    // 【S】【O】【A】【P】形式をパース
+    const parsed = parseSOAP(clipText);
+    if (Object.keys(parsed).length > 0) return parsed;
+    
+    // パースできない場合はSに全文を入れる
+    return { S: clipText, O: '', A: '', P: '' };
+  }
+  
+  /**
+   * 【S】【O】【A】【P】形式をパース
+   */
+  function parseSOAP(text) {
     const sections = {};
     const regex = /【([SOAP])】([\s\S]*?)(?=【[SOAP]】|$)/g;
     let match;
-    while ((match = regex.exec(clipText)) !== null) {
+    while ((match = regex.exec(text)) !== null) {
       sections[match[1]] = match[2].trim();
     }
-    
-    if (Object.keys(sections).length > 0) {
-      soapData = sections;
-    } else {
-      // パースできない場合はそのままSに入れる
-      soapData = { S: clipText, O: '', A: '', P: '' };
-    }
-  }
-
-  if (!soapData) {
-    alert('SOAPデータが見つかりません。\nPWAで「メディクスへ送信」を押してからやり直してください。');
-    return;
+    return sections;
   }
 
   /* ==========================================
      メディクスへの入力
      ========================================== */
-  let filled = 0;
-  
-  function fillField(soapKey) {
+  function fillField(soapKey, soapData) {
     const value = soapData[soapKey];
-    if (!value) return;
+    if (!value) return false;
     
     const selector = SELECTORS[soapKey];
-    if (!selector) return;
+    if (!selector) return false;
 
-    // 複数のセレクタを試行
     const selectors = selector.split(',').map(s => s.trim());
     
     for (const sel of selectors) {
@@ -105,67 +105,77 @@ javascript:(function(){
           try {
             el = iframe.contentDocument?.querySelector(sel);
             if (el) break;
-          } catch(e) {
-            // クロスオリジンの場合はスキップ
-          }
+          } catch(e) {}
         }
       }
       
       if (el) {
-        // 値を設定
         if (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT') {
+          // 既存の値がある場合は末尾に追加するか確認
+          if (el.value && el.value.trim()) {
+            if (!confirm(`${soapKey}フィールドに既存の内容があります。上書きしますか？\n\n既存: ${el.value.substring(0, 50)}...`)) {
+              return false;
+            }
+          }
           el.value = value;
           el.dispatchEvent(new Event('input', { bubbles: true }));
           el.dispatchEvent(new Event('change', { bubbles: true }));
+          // React/Vue 対策
+          const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
+            window.HTMLTextAreaElement.prototype, 'value'
+          )?.set || Object.getOwnPropertyDescriptor(
+            window.HTMLInputElement.prototype, 'value'
+          )?.set;
+          if (nativeInputValueSetter) {
+            nativeInputValueSetter.call(el, value);
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+          }
         } else if (el.isContentEditable) {
           el.textContent = value;
           el.dispatchEvent(new Event('input', { bubbles: true }));
         }
         
-        filled++;
         console.log(`[SOAP] ${soapKey} filled:`, value.substring(0, 50) + '...');
-        return;
+        return true;
       }
     }
     
-    console.warn(`[SOAP] ${soapKey} field not found with selectors: ${selector}`);
+    console.warn(`[SOAP] ${soapKey} field not found: ${selector}`);
+    return false;
   }
-
-  // 各フィールドに入力
-  fillField('S');
-  fillField('O');
-  fillField('A');
-  fillField('P');
 
   /* ==========================================
-     結果表示
+     実行
      ========================================== */
-  if (filled > 0) {
-    alert(
-      `✅ SOAP入力完了！（${filled}項目）\n\n` +
-      '内容を確認してから保存してください。\n' +
-      '※ セレクタが合わない場合は、開発者ツール(F12)で\n' +
-      '   メディクスの入力フィールドを確認し、\n' +
-      '   ブックマークレットのSELECTORSを調整してください。'
-    );
-  } else {
-    // フィールドが見つからない場合のヘルプ
-    alert(
-      '⚠️ 入力フィールドが見つかりませんでした。\n\n' +
-      '以下を確認してください:\n' +
-      '1. メディクスの薬歴入力画面を開いていますか？\n' +
-      '2. ブックマークレットのセレクタを\n' +
-      '   メディクスの実際のフィールドに合わせて\n' +
-      '   変更する必要があります。\n\n' +
-      '【手動入力の方法】\n' +
-      'SOAPデータはクリップボードにコピー済みです。\n' +
-      '各フィールドに手動で貼り付けてください。'
-    );
-  }
+  (async function main() {
+    const soapData = await getSOAPData();
+    if (!soapData) {
+      alert('キャンセルされました');
+      return;
+    }
+    
+    let filled = 0;
+    ['S', 'O', 'A', 'P'].forEach(key => {
+      if (fillField(key, soapData)) filled++;
+    });
 
-  // localStorageのデータをクリア
-  try {
-    localStorage.removeItem('soap_medixs_data');
-  } catch(e) {}
-  
+    if (filled > 0) {
+      alert(
+        `✅ SOAP入力完了！（${filled}/4項目）\n\n` +
+        '内容を確認してから保存してください。\n' +
+        (filled < 4 ? `\n⚠️ ${4 - filled}項目はフィールドが見つかりませんでした。\nF12 → 検証 でセレクタを確認してください。` : '')
+      );
+    } else {
+      alert(
+        '⚠️ 入力フィールドが見つかりません。\n\n' +
+        '【セレクタの調整が必要です】\n' +
+        '1. メディクスの薬歴入力画面で F12 を押す\n' +
+        '2. S/O/A/P のテキストエリアを右クリック → 「検証」\n' +
+        '3. ブックマークレットのSELECTORSを書き換え\n\n' +
+        '【手動入力の方法】\n' +
+        'SOAPデータはクリップボードにコピー済みです。\n' +
+        '各フィールドに Ctrl+V で貼り付けてください。'
+      );
+    }
+  })();
 })();
