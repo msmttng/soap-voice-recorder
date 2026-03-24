@@ -1,65 +1,24 @@
-# SOAP Voice Recorder — チェンジログ
+# CHANGELOG — SOAP Voice Recorder
 
-## セッション概要
-- **日付:** 2026-03-23 ～ 2026-03-24
-- **リポジトリ:** https://github.com/msmttng/soap-voice-recorder
-- **デプロイ:** https://msmttng.github.io/soap-voice-recorder/
-- **GAS URL:** `https://script.google.com/macros/s/AKfycbwCGoQvI3IeKZEEWBV5x-vpVF1sFRnKG1p6O4eZ9OFNqsqgyph1l5aRnSwb_4tbmM3D/exec`
-- **スプレッドシートID:** `1HMTjNvtklfhdLGe1btXyn6f-DTAr30kgMtmR-zhYv4w`
+## 2026-03-24
 
----
+### feat: iOS録音対応 — 2段階方式 (`a994190`)
+- `GeminiClient.transcribeAudio()` 追加 — 音声→テキストのみ（トークン95%削減）
+- 録音フロー: Speech API 成功→テキスト生成 / 失敗→Gemini音声文字起こし→テキスト生成
+- iOS Safari の `audio/mp4` MIME対応（`recorder.js` 既存）
 
-## 変更履歴
+### fix: Chrome拡張ペースト先変更 (`598693f`)
+- デフォルトペースト先を `#bulk-text-area` → `#voice-transcription` に変更
 
-### Phase 1: 録音安定性 + UIテーマ (2026-03-23)
-| ファイル | 内容 |
-|----------|------|
-| `recorder.js` | Wake Lock API, AudioContext自動復帰, 指数バックオフ付きSpeechRecognition |
-| `style.css` | ダーク → ライトテーマ全面変更 |
-| `manifest.json` | テーマカラー変更 |
-| `icons/` | PWAアイコン 192x192, 512x512 作成 |
+### fix: Chrome拡張クリップボード修正 (`31926cd`)
+- 3段階フォールバック: Clipboard API → execCommand → 手動ダイアログ
+- CSS `.hidden` → `.soap-hidden` に変更（Zephyrus側との競合回避）
 
-### Phase 2: クラウドバックアップ (2026-03-23)
-| ファイル | 内容 |
-|----------|------|
-| `recording-backup.js` | IndexedDB録音チャンクバックアップ |
-| `gas/Code.gs` | GASバックエンド（SOAP保存+履歴取得） |
-| `app.js` | GASClient統合, testConnection拡張 |
-| `sw.js` | recording-backup.jsキャッシュ追加 |
-| `index.html` | script参照追加 |
+### feat: Zephyrus Chrome拡張 (`e4ecf89`)
+- Manifest V3 Chrome拡張を新規作成
+- フローティングボタン + コンテキストメニュー
+- React/Next.js 対応のテキストエリア入力
 
-### Phase 3: メディクス連携 (2026-03-23)
-| ファイル | 内容 |
-|----------|------|
-| `bookmarklet/medixs-input.js` | クリップボード自動読取, 上書き確認, React/Vue対応 |
-
-### Phase 4: NSIPS連携 (2026-03-24)
-| ファイル | 内容 |
-|----------|------|
-| `nsips/nsips_parser.py` | VER010401形式パーサー（実データ対応） |
-| `nsips/nsips_watcher.py` | フォルダ監視デーモン（`\\VER7\gemini連携`対応） |
-| `gas/Code.gs` | NSIPS患者シート追加, 患者リストAPI, 使用済みフラグ |
-| `index.html` | 患者選択プルダウン追加 |
-| `app.js` | loadPatients, renderPatients(プルダウン), selectPatient |
-| `start_nsips_watcher.bat` | 起動バッチファイル |
-
----
-
-## アーキテクチャ
-
-```
-レセコン → \\VER7\gemini連携\SIPS12\DATA\
-  ↓ (nsips_watcher.py)
-GAS スプレッドシート (NSIPS患者シート)
-  ↓ (?action=patients)
-📱 PWA → 患者プルダウン選択 → 録音 → SOAP生成
-  ↓ (GASClient.saveSOAP)
-GAS スプレッドシート (SOAP記録シート)
-  ↓
-💻 Chrome拡張 → メディクス自動入力
-```
-
-## 環境情報
-- **NSIPSフォルダ:** `\\VER7\gemini連携\SIPS12\DATA\`
-- **NSIPSフォーマット:** VER010401 (CSV, Shift-JIS)
-- **Service Worker:** `soap-recorder-v5`
+### feat: AI薬歴モデルフォールバック (`3ca17ae`)
+- `_callAPIRaw` メソッド追加
+- 4モデル順次試行 + 15秒待機リトライ
