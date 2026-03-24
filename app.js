@@ -338,6 +338,37 @@ const GeminiClient = {
   },
 
   /**
+   * 単一モデルでのAPI呼び出し（生テキスト返却版）
+   */
+  async _callAPIRaw(model, apiVersion, apiKey, requestBody) {
+    const url = `https://generativelanguage.googleapis.com/${apiVersion}/models/${model}:generateContent?key=${apiKey}`;
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(requestBody)
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      const errorMsg = errorData.error?.message || response.statusText;
+      if (response.status === 429) {
+        const err = new Error(`レート制限: ${errorMsg}`);
+        err.isRateLimit = true;
+        throw err;
+      }
+      throw new Error(`APIエラー (${response.status}): ${errorMsg}`);
+    }
+
+    const data = await response.json();
+    const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (!text) throw new Error('AIからの応答が空でした。');
+
+    console.log(`[Gemini] ✅ ${model}(${apiVersion}) raw success!`);
+    return text;
+  },
+
+  /**
    * AIレスポンスからSOAP JSONを抽出
    */
   _parseSOAPResponse(text) {
@@ -723,34 +754,56 @@ ${transcript}`;
     document.getElementById('yakurekiOutputArea').classList.remove('hidden');
     document.getElementById('yakurekiOutput').textContent = '⏳ AI が会話を分析中...';
 
-    try {
-      const model = 'gemini-2.5-flash-lite';
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${settings.geminiApiKey}`;
-      
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: {
-            temperature: 0.3,
-            maxOutputTokens: 2000
-          }
-        })
-      });
+    const requestBody = {
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: {
+        temperature: 0.3,
+        maxOutputTokens: 2000
+      }
+    };
 
-      if (!response.ok) throw new Error(`API Error: ${response.status}`);
-      
-      const data = await response.json();
-      const text = data.candidates?.[0]?.content?.parts?.[0]?.text || 'AIからの応答がありませんでした';
-      
-      document.getElementById('yakurekiOutput').textContent = text;
-      this.toast('✅ AI分析完了');
-    } catch (err) {
-      console.error('[Yakureki] AI error:', err);
-      document.getElementById('yakurekiOutput').textContent = `❌ エラー: ${err.message}`;
-      this.toast('❌ AI分析に失敗しました', 'error');
+    // 複数モデル順次フォールバック（GeminiClient.MODEL_CONFIGSを共有）
+    const errors = [];
+    const outputEl = document.getElementById('yakurekiOutput');
+
+    for (let i = 0; i < GeminiClient.MODEL_CONFIGS.length; i++) {
+      const cfg = GeminiClient.MODEL_CONFIGS[i];
+      console.log(`[Yakureki] Trying ${i + 1}/${GeminiClient.MODEL_CONFIGS.length}: ${cfg.model}`);
+      outputEl.textContent = `⏳ ${cfg.model} で分析中...`;
+
+      try {
+        const text = await GeminiClient._callAPIRaw(cfg.model, cfg.api, settings.geminiApiKey, requestBody);
+        outputEl.textContent = text;
+        this.toast('✅ AI分析完了');
+        return;
+      } catch (err) {
+        console.warn(`[Yakureki] ${cfg.model} failed:`, err.message);
+        errors.push(`${cfg.model}: ${err.message}`);
+        if (i < GeminiClient.MODEL_CONFIGS.length - 1) {
+          outputEl.textContent = `⏳ ${cfg.model} が制限中...次のモデルへ`;
+          await new Promise(r => setTimeout(r, 1500));
+        }
+      }
     }
+
+    // 最終リトライ: 15秒待って再試行
+    for (let sec = 15; sec > 0; sec--) {
+      outputEl.textContent = `⏳ 全モデル制限中...${sec}秒後に最終リトライ`;
+      await new Promise(r => setTimeout(r, 1000));
+    }
+    for (const cfg of GeminiClient.MODEL_CONFIGS) {
+      try {
+        outputEl.textContent = `⏳ ${cfg.model} で最終リトライ中...`;
+        const text = await GeminiClient._callAPIRaw(cfg.model, cfg.api, settings.geminiApiKey, requestBody);
+        outputEl.textContent = text;
+        this.toast('✅ AI分析完了');
+        return;
+      } catch (e) { continue; }
+    }
+
+    // 全て失敗
+    outputEl.textContent = `❌ 全モデルで生成に失敗しました。\n${errors.slice(0, 3).join('\n')}`;
+    this.toast('❌ AI分析に失敗しました', 'error');
   },
 
   // --- AI薬歴: コピー ---
