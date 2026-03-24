@@ -1,5 +1,5 @@
 // Service Worker — ネットワーク優先キャッシュ v2
-const CACHE_NAME = 'soap-recorder-v5';
+const CACHE_NAME = 'soap-recorder-v6';
 const ASSETS = [
   '/',
   '/index.html',

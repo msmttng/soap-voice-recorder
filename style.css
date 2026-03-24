@@ -46,6 +46,40 @@
   --font-mono: 'SF Mono', 'Fira Code', monospace;
 }
 
+/* Tab Bar */
+.tab-bar {
+  display: flex;
+  gap: 0;
+  background: var(--bg-card);
+  border-bottom: 1px solid var(--border);
+  padding: 0 16px;
+  position: sticky;
+  top: 56px;
+  z-index: 90;
+}
+.tab-btn {
+  flex: 1;
+  padding: 12px 16px;
+  font-size: 14px;
+  font-weight: 500;
+  font-family: var(--font-main);
+  background: none;
+  border: none;
+  border-bottom: 3px solid transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.tab-btn.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+  font-weight: 600;
+}
+.tab-btn:hover:not(.active) {
+  color: var(--text-secondary);
+  background: var(--bg-secondary);
+}
+
 /* Reset & Base */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 

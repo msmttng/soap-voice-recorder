@@ -512,12 +512,16 @@ const History = {
 // ==============================================
 const App = {
   recorder: null,
+  yakurekiRecorder: null,
   currentSOAP: null,
   waveformAnimId: null,
-  selectedPatient: null,  // NSIPS選択中の患者
+  selectedPatient: null,
+  currentTab: 'soap',
+  yakurekiTranscript: '',
 
   init() {
     this.recorder = new AudioRecorder();
+    this.yakurekiRecorder = new AudioRecorder();
     this.bindEvents();
     this.loadSettings();
     this.renderHistory();
@@ -552,12 +556,232 @@ const App = {
     document.getElementById('sendToMedixsBtn').addEventListener('click', () => this.sendToMedixs());
     document.getElementById('saveOnlyBtn').addEventListener('click', () => this.saveSOAP());
 
+    // AI薬歴タブ
+    document.getElementById('yakurekiRecordBtn').addEventListener('click', () => this.yakurekiToggleRecording());
+    document.getElementById('yakurekiCopyBtn').addEventListener('click', () => this.yakurekiCopy());
+    document.getElementById('yakurekiClearBtn').addEventListener('click', () => this.yakurekiClear());
+
     document.querySelectorAll('.edit-btn').forEach(btn => {
       btn.addEventListener('click', () => this.toggleEdit(btn.dataset.target));
     });
 
     // テキスト直接入力からSOAP生成
     document.getElementById('generateFromTextBtn').addEventListener('click', () => this.generateFromText());
+  },
+
+  // --- タブ切り替え ---
+  switchTab(tab) {
+    this.currentTab = tab;
+    
+    // タブボタンの状態更新
+    document.querySelectorAll('.tab-btn').forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.tab === tab);
+    });
+    
+    // 画面の表示切替
+    const recordScreen = document.getElementById('recordScreen');
+    const yakurekiScreen = document.getElementById('yakurekiScreen');
+    
+    if (tab === 'soap') {
+      recordScreen.classList.add('active');
+      yakurekiScreen.classList.remove('active');
+    } else {
+      recordScreen.classList.remove('active');
+      yakurekiScreen.classList.add('active');
+      // 患者プルダウンを同期
+      this.syncYakurekiPatients();
+    }
+    
+    // 設定・SOAP画面を非表示
+    document.getElementById('soapScreen').classList.remove('active');
+    document.getElementById('settingsScreen').classList.remove('active');
+    document.getElementById('tabBar').style.display = '';
+  },
+
+  syncYakurekiPatients() {
+    const settings = Config.load();
+    if (!settings.gasUrl) {
+      document.getElementById('yakurekiPatientArea').classList.add('hidden');
+      return;
+    }
+    
+    // SOAPタブのプルダウンからコピー
+    const srcSelect = document.getElementById('patientSelect');
+    const dstSelect = document.getElementById('yakurekiPatientSelect');
+    dstSelect.innerHTML = srcSelect.innerHTML;
+    
+    document.getElementById('yakurekiPatientArea').classList.remove('hidden');
+    
+    // AI薬歴側のプルダウン変更イベント
+    dstSelect.onchange = () => {
+      const row = dstSelect.value;
+      if (row && this._patientMap && this._patientMap[row]) {
+        this.selectedPatient = this._patientMap[row];
+        document.getElementById('drugInput').value = this.selectedPatient.drug_summary || '';
+      } else {
+        this.selectedPatient = null;
+      }
+    };
+  },
+
+  // --- AI薬歴: 録音 ---
+  yakurekiToggleRecording() {
+    if (this.yakurekiRecorder.isRecording) {
+      this.yakurekiStopRecording();
+    } else {
+      this.yakurekiStartRecording();
+    }
+  },
+
+  async yakurekiStartRecording() {
+    this.yakurekiTranscript = '';
+    document.getElementById('yakurekiTranscriptText').textContent = '🎤 音声を認識中...';
+    document.getElementById('yakurekiTranscriptArea').classList.remove('hidden');
+    document.getElementById('yakurekiOutputArea').classList.add('hidden');
+
+    // 文字起こしコールバック
+    const onTranscript = (text) => {
+      this.yakurekiTranscript = text;
+      document.getElementById('yakurekiTranscriptText').textContent = text || '🎤 音声を認識中...';
+    };
+
+    // ステータスコールバック
+    const onStatus = (type, detail) => {
+      if (type === 'timer') {
+        document.getElementById('yakurekiRecordTime').textContent = detail;
+      }
+    };
+
+    this.yakurekiRecorder.onStatusChange = onStatus;
+
+    try {
+      await this.yakurekiRecorder.start(onTranscript);
+      document.getElementById('yakurekiMicIcon').classList.add('hidden');
+      document.getElementById('yakurekiStopIcon').classList.remove('hidden');
+      document.getElementById('yakurekiRecordBtn').classList.add('recording');
+      document.getElementById('yakurekiRecordLabel').textContent = 'タップして停止';
+    } catch (err) {
+      this.toast('❌ マイクへのアクセスに失敗しました', 'error');
+      console.error('[Yakureki] Start error:', err);
+    }
+  },
+
+  async yakurekiStopRecording() {
+    await this.yakurekiRecorder.stop();
+    
+    document.getElementById('yakurekiMicIcon').classList.remove('hidden');
+    document.getElementById('yakurekiStopIcon').classList.add('hidden');
+    document.getElementById('yakurekiRecordBtn').classList.remove('recording');
+    document.getElementById('yakurekiRecordLabel').textContent = 'タップして録音開始';
+    document.getElementById('yakurekiRecordTime').textContent = '00:00';
+    
+    if (this.yakurekiTranscript) {
+      await this.yakurekiGenerateSummary(this.yakurekiTranscript);
+    } else {
+      this.toast('⚠️ 音声を認識できませんでした', 'error');
+    }
+  },
+
+  // --- AI薬歴: 話者分離要約生成 ---
+  async yakurekiGenerateSummary(transcript) {
+    const settings = Config.load();
+    if (!settings.apiKey) {
+      this.toast('⚠️ APIキーを設定してください', 'error');
+      return;
+    }
+
+    const patient = this.selectedPatient;
+    const patientInfo = patient ? `\n患者名: ${patient.name}（${patient.age || ''}歳・${patient.gender || ''}）` : '';
+    const drugInfo = patient ? `\n処方薬: ${patient.drug_summary || ''}` : (document.getElementById('drugInput').value || '');
+
+    const prompt = `あなたは薬局の薬歴作成支援AIです。以下の薬剤師と患者の会話を分析し、AI薬歴システム入力用のデータを作成してください。
+
+## 指示
+1. 会話から話者を判別し、「薬剤師:」「患者:」のラベルを付けて会話を再構成してください
+2. 会話の要約を作成してください
+3. 以下のフォーマットで出力してください
+
+## 出力フォーマット
+【患者情報】${patientInfo}
+【処方薬】${drugInfo}
+
+【会話記録（話者分離）】
+薬剤師: ○○○
+患者: ○○○
+（会話の流れに沿って記載）
+
+【要約】
+服薬状況、副作用、患者の訴え、指導内容などを簡潔にまとめる
+
+【特記事項】
+次回確認事項や注意点があれば記載
+
+## 会話テキスト
+${transcript}`;
+
+    this.toast('🧠 AI分析中...');
+    document.getElementById('yakurekiOutputArea').classList.remove('hidden');
+    document.getElementById('yakurekiOutput').textContent = '⏳ AI が会話を分析中...';
+
+    try {
+      const model = 'gemini-2.5-flash-lite';
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${settings.apiKey}`;
+      
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: {
+            temperature: 0.3,
+            maxOutputTokens: 2000
+          }
+        })
+      });
+
+      if (!response.ok) throw new Error(`API Error: ${response.status}`);
+      
+      const data = await response.json();
+      const text = data.candidates?.[0]?.content?.parts?.[0]?.text || 'AIからの応答がありませんでした';
+      
+      document.getElementById('yakurekiOutput').textContent = text;
+      this.toast('✅ AI分析完了');
+    } catch (err) {
+      console.error('[Yakureki] AI error:', err);
+      document.getElementById('yakurekiOutput').textContent = `❌ エラー: ${err.message}`;
+      this.toast('❌ AI分析に失敗しました', 'error');
+    }
+  },
+
+  // --- AI薬歴: コピー ---
+  async yakurekiCopy() {
+    const text = document.getElementById('yakurekiOutput').textContent;
+    if (!text) {
+      this.toast('⚠️ コピーするデータがありません', 'error');
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(text);
+      this.toast('📋 クリップボードにコピーしました');
+    } catch (err) {
+      // フォールバック
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+      this.toast('📋 コピーしました');
+    }
+  },
+
+  // --- AI薬歴: クリア ---
+  yakurekiClear() {
+    document.getElementById('yakurekiOutput').textContent = '';
+    document.getElementById('yakurekiOutputArea').classList.add('hidden');
+    document.getElementById('yakurekiTranscriptArea').classList.add('hidden');
+    this.yakurekiTranscript = '';
+    this.toast('🗑 クリアしました');
   },
 
   /**
