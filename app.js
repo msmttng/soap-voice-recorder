@@ -685,7 +685,7 @@ const App = {
   // --- AI薬歴: 話者分離要約生成 ---
   async yakurekiGenerateSummary(transcript) {
     const settings = Config.load();
-    if (!settings.apiKey) {
+    if (!settings.geminiApiKey) {
       this.toast('⚠️ APIキーを設定してください', 'error');
       return;
     }
@@ -725,7 +725,7 @@ ${transcript}`;
 
     try {
       const model = 'gemini-2.5-flash-lite';
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${settings.apiKey}`;
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${settings.geminiApiKey}`;
       
       const response = await fetch(url, {
         method: 'POST',
@@ -800,7 +800,11 @@ ${transcript}`;
   showScreen(screenId) {
     document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
     document.getElementById(screenId).classList.add('active');
-    document.getElementById('header').style.display = (screenId === 'recordScreen') ? '' : 'none';
+
+    // ヘッダーとタブバーの表示制御
+    const isMainScreen = (screenId === 'recordScreen' || screenId === 'yakurekiScreen');
+    document.getElementById('header').style.display = isMainScreen ? '' : 'none';
+    document.getElementById('tabBar').style.display = isMainScreen ? '' : 'none';
   },
 
   // --- Canvas ---
