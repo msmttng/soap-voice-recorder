@@ -46,9 +46,9 @@
           <h2>患者選択</h2>
           <button id="refreshPatientsBtn" class="control-btn" style="margin:0; padding:6px 12px; font-size:12px;">🔄 更新</button>
         </div>
-        <div id="patientList" style="max-height:200px; overflow-y:auto;">
-          <p class="hint">GAS接続後に患者リストが表示されます</p>
-        </div>
+        <select id="patientSelect" style="width:100%; padding:10px; font-size:16px; border-radius:8px; border:1px solid var(--border); background:var(--surface); color:var(--text);">
+          <option value="">-- 患者を選択 --</option>
+        </select>
       </section>
 
       <!-- 録音コントロール -->

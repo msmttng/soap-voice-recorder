@@ -963,34 +963,31 @@ const App = {
   },
 
   renderPatients(patients) {
-    const list = document.getElementById('patientList');
-    if (patients.length === 0) {
-      list.innerHTML = '<p class="hint">待機中の患者はいません</p>';
-      return;
-    }
-
-    list.innerHTML = patients.map(p => `
-      <div class="history-item" onclick="App.selectPatient(${JSON.stringify(p).replace(/"/g, '&quot;')})" 
-           style="cursor:pointer; ${this.selectedPatient && this.selectedPatient.row === p.row ? 'border-color:var(--accent); background:var(--accent-glow);' : ''}">
-        <div class="history-item-info">
-          <h4>👤 ${p.name} ${p.kana ? `(${p.kana})` : ''} ${p.gender || ''} ${p.age ? p.age + '歳' : ''}</h4>
-          <p style="font-size:11px; color:var(--text-muted); white-space:pre-line; margin-top:4px;">${(p.drug_summary || '').substring(0, 100)}</p>
-        </div>
-        <span style="font-size:11px; color:var(--text-muted);">${p.prescription_date || ''}</span>
-      </div>
-    `).join('');
-  },
-
-  selectPatient(patient) {
-    this.selectedPatient = patient;
+    const select = document.getElementById('patientSelect');
+    select.innerHTML = '<option value="">-- 患者を選択 --</option>';
     
-    // 処方薬情報を自動入力
-    document.getElementById('drugInput').value = patient.drug_summary || '';
-    
-    // 患者選択UIを更新
-    this.loadPatients().then(() => {
-      this.toast(`👤 ${patient.name} さんを選択しました`);
+    // 患者データをマップに保存
+    this._patientMap = {};
+    patients.forEach(p => {
+      this._patientMap[p.row] = p;
+      const opt = document.createElement('option');
+      opt.value = p.row;
+      opt.textContent = p.name;
+      select.appendChild(opt);
     });
+
+    // 選択イベント
+    select.onchange = () => {
+      const row = select.value;
+      if (row && this._patientMap[row]) {
+        const patient = this._patientMap[row];
+        this.selectedPatient = patient;
+        document.getElementById('drugInput').value = patient.drug_summary || '';
+        this.toast(`👤 ${patient.name} さんを選択しました`);
+      } else {
+        this.selectedPatient = null;
+      }
+    };
   },
 
   togglePause() {
