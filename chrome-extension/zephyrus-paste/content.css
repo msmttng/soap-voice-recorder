@@ -1,0 +1,141 @@
+/* SOAP → Zephyrus ペースト — Content Script Styles */
+
+#soap-zephyrus-fab {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  z-index: 99999;
+  font-family: 'Noto Sans JP', -apple-system, sans-serif;
+}
+
+/* メインFAB */
+#soap-paste-btn {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  border: none;
+  background: linear-gradient(135deg, #7c3aed, #9333ea);
+  color: white;
+  cursor: pointer;
+  box-shadow: 0 4px 20px rgba(124, 58, 237, 0.35);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  position: relative;
+}
+
+#soap-paste-btn:hover {
+  transform: scale(1.1);
+  box-shadow: 0 6px 28px rgba(124, 58, 237, 0.5);
+}
+
+#soap-paste-btn:active {
+  transform: scale(0.95);
+}
+
+.soap-fab-icon {
+  font-size: 22px;
+  line-height: 1;
+}
+
+.soap-fab-label {
+  font-size: 8px;
+  font-weight: 600;
+  line-height: 1.1;
+  margin-top: 2px;
+  text-align: center;
+  letter-spacing: -0.3px;
+}
+
+/* コンテキストメニュー */
+.soap-menu {
+  position: absolute;
+  bottom: 72px;
+  right: 0;
+  background: white;
+  border-radius: 12px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.15);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  overflow: hidden;
+  min-width: 200px;
+  animation: soap-menu-in 0.2s ease;
+}
+
+@keyframes soap-menu-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.soap-menu-item {
+  display: block;
+  width: 100%;
+  padding: 12px 16px;
+  border: none;
+  background: none;
+  color: #1a1a2e;
+  font-family: inherit;
+  font-size: 14px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.soap-menu-item:hover {
+  background: #f3f0ff;
+}
+
+.soap-menu-item + .soap-menu-item {
+  border-top: 1px solid rgba(0, 0, 0, 0.06);
+}
+
+/* トースト */
+.soap-toast {
+  position: fixed;
+  bottom: 100px;
+  right: 24px;
+  padding: 12px 20px;
+  background: white;
+  border-radius: 10px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.12);
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  font-size: 13px;
+  color: #1a1a2e;
+  max-width: 320px;
+  z-index: 100000;
+  animation: soap-toast-in 0.3s ease;
+  transition: opacity 0.3s;
+}
+
+.soap-toast.error {
+  border-color: rgba(220, 38, 38, 0.3);
+  color: #dc2626;
+}
+
+.soap-toast.hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+
+@keyframes soap-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* ユーティリティ */
+.hidden {
+  display: none !important;
+}

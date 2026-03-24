@@ -1,0 +1,23 @@
+{
+  "manifest_version": 3,
+  "name": "SOAP → Zephyrus ペースト",
+  "version": "1.0.0",
+  "description": "SOAP Voice RecorderのAI薬歴出力をZephyrus薬歴入力に自動ペーストする",
+  "permissions": ["clipboardRead"],
+  "content_scripts": [
+    {
+      "matches": ["https://zephyrus.jp/*"],
+      "js": ["content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "SOAP → Zephyrus"
+  },
+  "icons": {
+    "48": "icon48.png",
+    "128": "icon128.png"
+  }
+}
