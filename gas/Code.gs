@@ -21,7 +21,7 @@
 // ============================================
 // 設定
 // ============================================
-const SPREADSHEET_ID = ''; // ← 自分のスプレッドシートIDを設定
+const SPREADSHEET_ID = '1HMTjNvtklfhdLGe1btXyn6f-DTAr30kgMtmR-zhYv4w';
 const SHEET_SOAP = 'SOAP記録';
 const SHEET_NSIPS = 'NSIPS患者';
 
