@@ -50,7 +50,7 @@
 }
 
 /* コンテキストメニュー */
-.soap-menu {
+#soap-paste-menu {
   position: absolute;
   bottom: 72px;
   right: 0;
@@ -110,8 +110,17 @@
   color: #1a1a2e;
   max-width: 320px;
   z-index: 100000;
-  animation: soap-toast-in 0.3s ease;
-  transition: opacity 0.3s;
+  opacity: 0;
+  transform: translateY(8px);
+  transition: opacity 0.3s, transform 0.3s;
+  pointer-events: none;
+  white-space: pre-line;
+}
+
+.soap-toast.soap-toast-show {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
 }
 
 .soap-toast.error {
@@ -119,23 +128,12 @@
   color: #dc2626;
 }
 
-.soap-toast.hidden {
-  opacity: 0;
-  pointer-events: none;
+.soap-toast.warn {
+  border-color: rgba(217, 119, 6, 0.3);
+  color: #d97706;
 }
 
-@keyframes soap-toast-in {
-  from {
-    opacity: 0;
-    transform: translateY(8px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-/* ユーティリティ */
-.hidden {
+/* Namespaced hidden */
+.soap-hidden {
   display: none !important;
 }
