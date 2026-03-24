@@ -126,7 +126,7 @@
       e.preventDefault();
       e.stopPropagation();
       console.log('[SOAP→Zephyrus] Button clicked');
-      await pasteToTarget('bulkTextArea');
+      await pasteToTarget('voiceTranscription');
     });
 
     // 右クリック → メニュー展開
