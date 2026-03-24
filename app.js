@@ -453,6 +453,47 @@ ${drugSection}
     const response = await fetch(url);
     if (!response.ok) throw new Error('APIキーが無効です');
     return true;
+  },
+
+  /**
+   * 音声→文字起こしのみ（トークン節約版）
+   * SOAP生成は行わず、テキストのみ返却
+   */
+  async transcribeAudio(audioBlob, mimeType) {
+    const settings = Config.load();
+    const apiKey = settings.geminiApiKey;
+    if (!apiKey) throw new Error('APIキーが設定されていません');
+
+    const audioBase64 = await AudioRecorder.blobToBase64(audioBlob);
+
+    const requestBody = {
+      contents: [{
+        parts: [
+          { inlineData: { mimeType: mimeType, data: audioBase64 } },
+          { text: '以下の音声を日本語で文字起こししてください。薬剤師と患者の会話です。文字起こしのみを出力し、他の情報は不要です。' }
+        ]
+      }],
+      generationConfig: {
+        temperature: 0.1,
+        maxOutputTokens: 2000
+      }
+    };
+
+    // 複数モデルフォールバック
+    for (let i = 0; i < this.MODEL_CONFIGS.length; i++) {
+      const cfg = this.MODEL_CONFIGS[i];
+      try {
+        const text = await this._callAPIRaw(cfg.model, cfg.api, apiKey, requestBody);
+        console.log(`[Gemini] ✅ Transcription via ${cfg.model}: ${text.length} chars`);
+        return text;
+      } catch (err) {
+        console.warn(`[Gemini] Transcription ${cfg.model} failed:`, err.message);
+        if (i < this.MODEL_CONFIGS.length - 1) {
+          await new Promise(r => setTimeout(r, 1500));
+        }
+      }
+    }
+    throw new Error('全モデルで文字起こしに失敗しました');
   }
 };
 
@@ -666,31 +707,48 @@ const App = {
 
   async yakurekiStartRecording() {
     this.yakurekiTranscript = '';
+    this._yakurekiSpeechWorked = false;
     document.getElementById('yakurekiTranscriptText').textContent = '🎤 音声を認識中...';
     document.getElementById('yakurekiTranscriptArea').classList.remove('hidden');
     document.getElementById('yakurekiOutputArea').classList.add('hidden');
 
-    // 文字起こしコールバック
-    const onTranscript = (text) => {
-      this.yakurekiTranscript = text;
-      document.getElementById('yakurekiTranscriptText').textContent = text || '🎤 音声を認識中...';
-    };
-
-    // ステータスコールバック
-    const onStatus = (type, detail) => {
-      if (type === 'timer') {
-        document.getElementById('yakurekiRecordTime').textContent = detail;
-      }
-    };
-
-    this.yakurekiRecorder.onStatusChange = onStatus;
-
     try {
-      await this.yakurekiRecorder.start(onTranscript);
+      // マイク録音開始（音声Blob用 — iOSフォールバック用に常に保持）
+      await this.yakurekiRecorder.start();
+
+      // タイマー表示
+      this.yakurekiRecorder.onStatusChange = (status, detail) => {
+        // タイマーは不要（タイマー表示は汎用的に行う）
+      };
+      this._yakurekiTimerInterval = setInterval(() => {
+        const el = document.getElementById('yakurekiRecordTime');
+        if (el) el.textContent = this.yakurekiRecorder.getFormattedTime();
+      }, 500);
+
+      // Web Speech API も並行開始（失敗しても録音は続行）
+      try {
+        SpeechTranscriber.start(
+          (final, interim) => {
+            this.yakurekiTranscript = final + interim;
+            this._yakurekiSpeechWorked = true;
+            const el = document.getElementById('yakurekiTranscriptText');
+            if (el) el.textContent = this.yakurekiTranscript || '🎤 音声を認識中...';
+          },
+          (status, detail) => {
+            console.log(`[Yakureki Speech] ${status}: ${detail}`);
+          }
+        );
+      } catch (speechErr) {
+        console.warn('[Yakureki] Speech API not available:', speechErr);
+        document.getElementById('yakurekiTranscriptText').textContent = '🎤 録音中（音声認識非対応 — AI文字起こしを使用）';
+      }
+
+      // UI更新
       document.getElementById('yakurekiMicIcon').classList.add('hidden');
       document.getElementById('yakurekiStopIcon').classList.remove('hidden');
       document.getElementById('yakurekiRecordBtn').classList.add('recording');
       document.getElementById('yakurekiRecordLabel').textContent = 'タップして停止';
+      this.toast('🎤 録音開始');
     } catch (err) {
       this.toast('❌ マイクへのアクセスに失敗しました', 'error');
       console.error('[Yakureki] Start error:', err);
@@ -698,16 +756,52 @@ const App = {
   },
 
   async yakurekiStopRecording() {
-    await this.yakurekiRecorder.stop();
-    
+    // 録音停止 → Blob取得
+    const recording = await this.yakurekiRecorder.stop();
+
+    // Speech API 停止
+    let speechText = '';
+    try {
+      speechText = SpeechTranscriber.stop();
+    } catch(e) {}
+
+    // タイマー停止
+    if (this._yakurekiTimerInterval) {
+      clearInterval(this._yakurekiTimerInterval);
+      this._yakurekiTimerInterval = null;
+    }
+
+    // UI復帰
     document.getElementById('yakurekiMicIcon').classList.remove('hidden');
     document.getElementById('yakurekiStopIcon').classList.add('hidden');
     document.getElementById('yakurekiRecordBtn').classList.remove('recording');
     document.getElementById('yakurekiRecordLabel').textContent = 'タップして録音開始';
     document.getElementById('yakurekiRecordTime').textContent = '00:00';
-    
-    if (this.yakurekiTranscript) {
-      await this.yakurekiGenerateSummary(this.yakurekiTranscript);
+
+    // === 2段階方式 ===
+    const transcript = speechText || this.yakurekiTranscript;
+
+    if (transcript && transcript.trim().length > 0) {
+      // ✅ Stage 1: Speech API成功 → テキストでAI薬歴生成
+      this.toast(`✅ 文字起こし完了（${transcript.length}文字）`);
+      await this.yakurekiGenerateSummary(transcript);
+    } else if (recording && recording.blob && recording.blob.size > 0) {
+      // ✅ Stage 2: Speech API失敗 → 音声をGeminiで文字起こし（トークン節約）→ テキストでAI薬歴生成
+      this.toast('🧠 音声をAIで文字起こし中...');
+      document.getElementById('yakurekiTranscriptText').textContent = '⏳ AIが音声を文字起こし中...';
+
+      try {
+        const transcribedText = await GeminiClient.transcribeAudio(
+          recording.blob, recording.mimeType
+        );
+        document.getElementById('yakurekiTranscriptText').textContent = transcribedText;
+        this.toast(`✅ AI文字起こし完了（${transcribedText.length}文字）`);
+        await this.yakurekiGenerateSummary(transcribedText);
+      } catch (err) {
+        console.error('[Yakureki] Audio transcription failed:', err);
+        document.getElementById('yakurekiTranscriptText').textContent = `❌ 文字起こし失敗: ${err.message}`;
+        this.toast('❌ 音声の文字起こしに失敗しました', 'error');
+      }
     } else {
       this.toast('⚠️ 音声を認識できませんでした', 'error');
     }
