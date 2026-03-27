@@ -1,4 +1,4 @@
-"""
+﻿"""
 nsips_parser.py — NSIPS VER010401 形式パーサー
 
 レセコンが出力するNSIPSデータを解析し、
@@ -161,7 +161,7 @@ if __name__ == '__main__':
         filepath = sys.argv[1]
     else:
         # テスト: 実際のNSIPSファイル
-        filepath = r'\\VER7\gemini連携\SIPS12\DATA\A99112036056171400000.txt'
+        filepath = r'\\Ver7\ai音声録音\SIPS12\DATA\A99112036056171400000.txt'
     
     result = parse_nsips_file(filepath)
     print(json.dumps(result, ensure_ascii=False, indent=2))

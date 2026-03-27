@@ -1,12 +1,12 @@
 @echo off
 title NSIPS Watcher - SOAP Voice Recorder
 echo =============================================
-echo  NSIPS 繝輔か繝ｫ繝逶｣隕悶し繝ｼ繝薙せ
-echo  Ctrl+C 縺ｧ蛛懈ｭ｢
+echo  NSIPS フォルダ監視サービス
+echo  Ctrl+C で停止
 echo =============================================
 echo.
 
 cd /d "%~dp0"
-python nsips\nsips_watcher.py -f "\\VER7\gemini騾｣謳ｺ" -i 3
+python nsips\nsips_watcher.py -f "\\Ver7\ai音声録音" -i 3
 
 pause

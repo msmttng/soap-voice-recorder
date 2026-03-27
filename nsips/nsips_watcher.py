@@ -124,7 +124,7 @@ def watch_folder(folder: str, gas_url: str, poll_interval: int = DEFAULT_POLL_IN
                             data = parse_nsips_file(str(filepath))
                             
                             patient_name = data["patient"]["name"]
-                            drug_count = sum(len(rx["drugs"]) for rx in data["prescriptions"])
+                            drug_count = len(data.get("drugs", []))
                             
                             print(f'  患者: {patient_name}')
                             print(f'  処方: {drug_count}剤')
@@ -145,6 +145,22 @@ def watch_folder(folder: str, gas_url: str, poll_interval: int = DEFAULT_POLL_IN
                                 print(f'  ⚠️ GAS URL未設定（ローカル表示のみ）')
                             
                             print()
+                            
+                            # === 追加: NSIPS通信仕様に基づく処理済みファイルの削除 ===
+                            try:
+                                # 1. DATAファイルの削除
+                                os.remove(filepath)
+                                print(f"  🗑️ 処理完了のためDATAファイルを削除しました: {filepath.name}")
+                                
+                                # 2. 対応するINDEXファイルの削除
+                                index_dir = filepath.parent.parent / "INDEX"
+                                index_file = index_dir / filepath.name
+                                if index_file.exists():
+                                    os.remove(index_file)
+                                    print(f"  🗑️ 対応するINDEXファイルを削除しました: {index_file.name}")
+                            except Exception as del_e:
+                                print(f"  ❌ ファイル削除中にエラー: {del_e}")
+                            # =======================================================
                             
                         except Exception as e:
                             print(f'  ❌ パースエラー: {e}')

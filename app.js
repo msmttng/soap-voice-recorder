@@ -19,7 +19,8 @@ const Config = {
     geminiApiKey: '',
     openaiApiKey: '',
     gasUrl: '',
-    aiProvider: 'gemini'
+    aiProvider: 'gemini',
+    speechEngine: 'whisper'
   },
 
   load() {
@@ -498,6 +499,49 @@ ${drugSection}
 };
 
 // ==============================================
+// OpenAI API クライアント (Whisper 連携)
+// ==============================================
+const OpenAIClient = {
+  async transcribeAudio(audioBlob, mimeType) {
+    const settings = Config.load();
+    const apiKey = settings.openaiApiKey;
+    if (!apiKey) throw new Error('OpenAI APIキーが設定されていません。設定画面でAPIキーを入力してください。');
+
+    // MIMEタイプに合わせて拡張子を決定
+    const ext = mimeType.includes('mp4') ? 'm4a' : 'webm';
+    const audioFile = new File([audioBlob], `audio.${ext}`, { type: mimeType });
+
+    const formData = new FormData();
+    formData.append('file', audioFile);
+    formData.append('model', 'whisper-1');
+    formData.append('language', 'ja');
+
+    const url = 'https://api.openai.com/v1/audio/transcriptions';
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`
+      },
+      body: formData
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      const errorMsg = errorData.error?.message || response.statusText;
+      if (response.status === 401) {
+         throw new Error('OpenAI APIキーが無効です。');
+      }
+      throw new Error(`APIエラー (${response.status}): ${errorMsg}`);
+    }
+
+    const data = await response.json();
+    console.log('[OpenAI] Whisper transcription successful');
+    return data.text;
+  }
+};
+
+// ==============================================
 // GAS バックエンドクライアント
 // ==============================================
 const GASClient = {
@@ -671,29 +715,7 @@ const App = {
   },
 
   syncYakurekiPatients() {
-    const settings = Config.load();
-    if (!settings.gasUrl) {
-      document.getElementById('yakurekiPatientArea').classList.add('hidden');
-      return;
-    }
-    
-    // SOAPタブのプルダウンからコピー
-    const srcSelect = document.getElementById('patientSelect');
-    const dstSelect = document.getElementById('yakurekiPatientSelect');
-    dstSelect.innerHTML = srcSelect.innerHTML;
-    
-    document.getElementById('yakurekiPatientArea').classList.remove('hidden');
-    
-    // AI薬歴側のプルダウン変更イベント
-    dstSelect.onchange = () => {
-      const row = dstSelect.value;
-      if (row && this._patientMap && this._patientMap[row]) {
-        this.selectedPatient = this._patientMap[row];
-        document.getElementById('drugInput').value = this.selectedPatient.drug_summary || '';
-      } else {
-        this.selectedPatient = null;
-      }
-    };
+    // 話者分離に特化したため患者選択の同期は不要になりました
   },
 
   // --- AI薬歴: 録音 ---
@@ -708,11 +730,13 @@ const App = {
   async yakurekiStartRecording() {
     this.yakurekiTranscript = '';
     this._yakurekiSpeechWorked = false;
-    document.getElementById('yakurekiTranscriptText').textContent = '🎤 音声を認識中...';
     document.getElementById('yakurekiTranscriptArea').classList.remove('hidden');
     document.getElementById('yakurekiOutputArea').classList.add('hidden');
 
     try {
+      const settings = Config.load();
+      const useWhisper = settings.speechEngine === 'whisper';
+
       // マイク録音開始（音声Blob用 — iOSフォールバック用に常に保持）
       await this.yakurekiRecorder.start();
 
@@ -725,22 +749,26 @@ const App = {
         if (el) el.textContent = this.yakurekiRecorder.getFormattedTime();
       }, 500);
 
-      // Web Speech API も並行開始（失敗しても録音は続行）
-      try {
-        SpeechTranscriber.start(
-          (final, interim) => {
-            this.yakurekiTranscript = final + interim;
-            this._yakurekiSpeechWorked = true;
-            const el = document.getElementById('yakurekiTranscriptText');
-            if (el) el.textContent = this.yakurekiTranscript || '🎤 音声を認識中...';
-          },
-          (status, detail) => {
-            console.log(`[Yakureki Speech] ${status}: ${detail}`);
-          }
-        );
-      } catch (speechErr) {
-        console.warn('[Yakureki] Speech API not available:', speechErr);
-        document.getElementById('yakurekiTranscriptText').textContent = '🎤 録音中（音声認識非対応 — AI文字起こしを使用）';
+      if (!useWhisper) {
+        // Web Speech API も並行開始（失敗しても録音は続行）
+        try {
+          SpeechTranscriber.start(
+            (final, interim) => {
+              this.yakurekiTranscript = final + interim;
+              this._yakurekiSpeechWorked = true;
+              const el = document.getElementById('yakurekiTranscriptText');
+              if (el) el.textContent = this.yakurekiTranscript || '🎤 音声を認識中...';
+            },
+            (status, detail) => {
+              console.log(`[Yakureki Speech] ${status}: ${detail}`);
+            }
+          );
+        } catch (speechErr) {
+          console.warn('[Yakureki] Speech API not available:', speechErr);
+          document.getElementById('yakurekiTranscriptText').textContent = '🎤 録音中（音声認識非対応 — AI文字起こしを使用）';
+        }
+      } else {
+        document.getElementById('yakurekiTranscriptText').innerHTML = '🎙 録音中...<br><span style="font-size:12px; color:var(--text-muted)">（終了後にWhisper高精度エンジンで一括文字起こしを実行します）</span>';
       }
 
       // UI更新
@@ -759,12 +787,6 @@ const App = {
     // 録音停止 → Blob取得
     const recording = await this.yakurekiRecorder.stop();
 
-    // Speech API 停止
-    let speechText = '';
-    try {
-      speechText = SpeechTranscriber.stop();
-    } catch(e) {}
-
     // タイマー停止
     if (this._yakurekiTimerInterval) {
       clearInterval(this._yakurekiTimerInterval);
@@ -778,15 +800,35 @@ const App = {
     document.getElementById('yakurekiRecordLabel').textContent = 'タップして録音開始';
     document.getElementById('yakurekiRecordTime').textContent = '00:00';
 
+    const settings = Config.load();
+    const useWhisper = settings.speechEngine === 'whisper';
+    let speechText = '';
+
+    if (useWhisper) {
+        document.getElementById('yakurekiTranscriptText').innerHTML = '⏳ OpenAI Whisperで文字起こし中...<br><span style="font-size:12px; color:var(--text-muted)">（数秒〜10秒程度かかります）</span>';
+        try {
+          speechText = await OpenAIClient.transcribeAudio(recording.blob, recording.mimeType);
+          document.getElementById('yakurekiTranscriptText').textContent = speechText;
+        } catch (whisperErr) {
+          console.error('[Yakureki] Whisper error:', whisperErr);
+          document.getElementById('yakurekiTranscriptText').textContent = `❌ Whisper文字起こし失敗: ${whisperErr.message}`;
+        }
+    } else {
+      // Speech API 停止
+      try {
+        speechText = SpeechTranscriber.stop();
+      } catch(e) {}
+    }
+
     // === 2段階方式 ===
-    const transcript = speechText || this.yakurekiTranscript;
+    const transcript = speechText || (!useWhisper ? this.yakurekiTranscript : '');
 
     if (transcript && transcript.trim().length > 0) {
-      // ✅ Stage 1: Speech API成功 → テキストでAI薬歴生成
+      // ✅ Stage 1: API成功 → テキストでAI薬歴生成
       this.toast(`✅ 文字起こし完了（${transcript.length}文字）`);
       await this.yakurekiGenerateSummary(transcript);
-    } else if (recording && recording.blob && recording.blob.size > 0) {
-      // ✅ Stage 2: Speech API失敗 → 音声をGeminiで文字起こし（トークン節約）→ テキストでAI薬歴生成
+    } else if (recording && recording.blob && recording.blob.size > 0 && !useWhisper) {
+      // ✅ Stage 2: (WebSpeech利用時のみのフォールバック) 音声をGeminiで文字起こし
       this.toast('🧠 音声をAIで文字起こし中...');
       document.getElementById('yakurekiTranscriptText').textContent = '⏳ AIが音声を文字起こし中...';
 
@@ -807,68 +849,49 @@ const App = {
     }
   },
 
-  // --- AI薬歴: 話者分離要約生成 ---
+  // --- AI薬歴: 話者分離テキスト生成 ---
   async yakurekiGenerateSummary(transcript) {
     const settings = Config.load();
     if (!settings.geminiApiKey) {
       this.toast('⚠️ APIキーを設定してください', 'error');
+      // APIキーがない場合はそのまま出力
+      document.getElementById('yakurekiOutputArea').classList.remove('hidden');
+      document.getElementById('yakurekiOutput').textContent = transcript;
       return;
     }
 
-    const patient = this.selectedPatient;
-    const patientInfo = patient ? `\n患者名: ${patient.name}（${patient.age || ''}歳・${patient.gender || ''}）` : '';
-    const drugInfo = patient ? `\n処方薬: ${patient.drug_summary || ''}` : (document.getElementById('drugInput').value || '');
-
-    const prompt = `あなたは薬局の薬歴作成支援AIです。以下の薬剤師と患者の会話を分析し、AI薬歴システム入力用のデータを作成してください。
-
-## 指示
-1. 会話から話者を判別し、「薬剤師:」「患者:」のラベルを付けて会話を再構成してください
-2. 会話の要約を作成してください
-3. 以下のフォーマットで出力してください
-
-## 出力フォーマット
-【患者情報】${patientInfo}
-【処方薬】${drugInfo}
-
-【会話記録（話者分離）】
-薬剤師: ○○○
-患者: ○○○
-（会話の流れに沿って記載）
-
-【要約】
-服薬状況、副作用、患者の訴え、指導内容などを簡潔にまとめる
-
-【特記事項】
-次回確認事項や注意点があれば記載
+    const prompt = `あなたは医療テキストの文字起こしアシスタントです。
+以下のテキストは薬剤師と患者の会話の文字起こしです。
+会話から話者を推測し、「薬剤師:」と「患者:」のラベルを付けて会話を再構成してください。
+その他の解説、要約、注釈は一切出力せず、話者分離された会話のテキストのみを出力してください。
 
 ## 会話テキスト
 ${transcript}`;
 
-    this.toast('🧠 AI分析中...');
+    this.toast('🧠 AI話者分離中...');
     document.getElementById('yakurekiOutputArea').classList.remove('hidden');
-    document.getElementById('yakurekiOutput').textContent = '⏳ AI が会話を分析中...';
+    document.getElementById('yakurekiOutput').textContent = '⏳ AIが話者を分離中...';
 
     const requestBody = {
       contents: [{ parts: [{ text: prompt }] }],
       generationConfig: {
-        temperature: 0.3,
+        temperature: 0.2, // 低めのtemperatureで事実重視
         maxOutputTokens: 2000
       }
     };
 
-    // 複数モデル順次フォールバック（GeminiClient.MODEL_CONFIGSを共有）
     const errors = [];
     const outputEl = document.getElementById('yakurekiOutput');
 
     for (let i = 0; i < GeminiClient.MODEL_CONFIGS.length; i++) {
       const cfg = GeminiClient.MODEL_CONFIGS[i];
       console.log(`[Yakureki] Trying ${i + 1}/${GeminiClient.MODEL_CONFIGS.length}: ${cfg.model}`);
-      outputEl.textContent = `⏳ ${cfg.model} で分析中...`;
+      outputEl.textContent = `⏳ ${cfg.model} で話者分離中...`;
 
       try {
         const text = await GeminiClient._callAPIRaw(cfg.model, cfg.api, settings.geminiApiKey, requestBody);
         outputEl.textContent = text;
-        this.toast('✅ AI分析完了');
+        this.toast('✅ 話者分離完了');
         return;
       } catch (err) {
         console.warn(`[Yakureki] ${cfg.model} failed:`, err.message);
@@ -890,14 +913,14 @@ ${transcript}`;
         outputEl.textContent = `⏳ ${cfg.model} で最終リトライ中...`;
         const text = await GeminiClient._callAPIRaw(cfg.model, cfg.api, settings.geminiApiKey, requestBody);
         outputEl.textContent = text;
-        this.toast('✅ AI分析完了');
+        this.toast('✅ 話者分離完了');
         return;
       } catch (e) { continue; }
     }
 
-    // 全て失敗
-    outputEl.textContent = `❌ 全モデルで生成に失敗しました。\n${errors.slice(0, 3).join('\n')}`;
-    this.toast('❌ AI分析に失敗しました', 'error');
+    // 全て失敗した場合はプレーンテキストをそのまま表示
+    outputEl.textContent = transcript;
+    this.toast('❌ AI分離に失敗したため、そのままテキストを表示します', 'error');
   },
 
   // --- AI薬歴: コピー ---
@@ -1031,6 +1054,9 @@ ${transcript}`;
 
   async startRecording() {
     try {
+      const settings = Config.load();
+      const useWhisper = settings.speechEngine === 'whisper';
+
       // マイク録音開始（波形表示 + 音声バックアップ用）
       await this.recorder.start();
       this.lastRecording = null;
@@ -1040,29 +1066,31 @@ ${transcript}`;
         this.updateRecorderStatus(status, detail);
       };
 
-      // リアルタイム音声認識も同時開始（失敗しても録音は続行）
-      try {
-        SpeechTranscriber.start(
-          (final, interim) => {
-            this.updateLiveTranscript(final, interim);
-          },
-          (status, detail) => {
-            this.updateSpeechStatus(status, detail);
-          }
-        );
-      } catch (speechErr) {
-        console.warn('[App] Speech API not available:', speechErr);
-      }
-
-      // visibilitychange で Speech API も復旧
-      this._visibilityRecovery = () => {
-        if (document.visibilityState === 'visible' && this.recorder.isRecording) {
-          console.log('[App] Page visible — recovering Speech API');
-          SpeechTranscriber.recover();
-          this.toast('🔄 バックグラウンドから復帰しました');
+      if (!useWhisper) {
+        // リアルタイム音声認識も同時開始（失敗しても録音は続行）
+        try {
+          SpeechTranscriber.start(
+            (final, interim) => {
+              this.updateLiveTranscript(final, interim);
+            },
+            (status, detail) => {
+              this.updateSpeechStatus(status, detail);
+            }
+          );
+        } catch (speechErr) {
+          console.warn('[App] Speech API not available:', speechErr);
         }
-      };
-      document.addEventListener('visibilitychange', this._visibilityRecovery);
+
+        // visibilitychange で Speech API も復旧
+        this._visibilityRecovery = () => {
+          if (document.visibilityState === 'visible' && this.recorder.isRecording) {
+            console.log('[App] Page visible — recovering Speech API');
+            SpeechTranscriber.recover();
+            this.toast('🔄 バックグラウンドから復帰しました');
+          }
+        };
+        document.addEventListener('visibilitychange', this._visibilityRecovery);
+      }
       
       // UI更新
       const btn = document.getElementById('recordBtn');
@@ -1074,10 +1102,14 @@ ${transcript}`;
       
       // リアルタイム表示エリアを表示
       document.getElementById('liveTranscriptArea').classList.remove('hidden');
-      document.getElementById('liveTranscriptText').textContent = '🎤 音声を認識中...';
       
-      // ステータスバッジを初期化
-      this.updateSpeechStatus('listening', '音声認識中');
+      if (useWhisper) {
+        document.getElementById('liveTranscriptText').innerHTML = '🎙 録音中...<br><span style="font-size:12px; color:var(--text-muted)">（終了後にWhisper高精度エンジンで一括文字起こしを実行します）</span>';
+        this.updateSpeechStatus('listening', 'Whisper録音中');
+      } else {
+        document.getElementById('liveTranscriptText').textContent = '🎤 音声を認識中...';
+        this.updateSpeechStatus('listening', '音声認識中');
+      }
       
       this.startWaveformAnimation();
       this.toast('🎙️ 録音開始（画面ロック防止ON）');
@@ -1088,23 +1120,12 @@ ${transcript}`;
 
   async stopRecording() {
     try {
-      // 録音停止 → Blobを取得（Geminiフォールバック用に保持）
+      const settings = Config.load();
+      const useWhisper = settings.speechEngine === 'whisper';
+
+      // 録音停止 → Blobを取得
       const recording = await this.recorder.stop();
       this.lastRecording = recording;
-      
-      // 音声認識を停止して結果取得
-      let transcript = '';
-      try {
-        transcript = SpeechTranscriber.stop();
-      } catch(e) {
-        console.warn('[App] SpeechTranscriber.stop() error:', e);
-      }
-
-      // visibilitychange リスナー解除
-      if (this._visibilityRecovery) {
-        document.removeEventListener('visibilitychange', this._visibilityRecovery);
-        this._visibilityRecovery = null;
-      }
       
       // UI復帰
       const btn = document.getElementById('recordBtn');
@@ -1114,18 +1135,47 @@ ${transcript}`;
       document.getElementById('recordLabel').textContent = 'タップして録音開始';
       document.getElementById('pauseBtn').classList.add('hidden');
       document.getElementById('recordTime').textContent = '00:00';
-      
       this.stopWaveformAnimation();
 
-      // === 3段階フォールバック ===
+      let transcript = '';
+
+      if (useWhisper) {
+        // Whisper APIへ送信
+        const liveArea = document.getElementById('liveTranscriptArea');
+        liveArea.classList.remove('hidden');
+        document.getElementById('liveTranscriptText').innerHTML = '⏳ OpenAI Whisperで文字起こし中...<br><span style="font-size:12px; color:var(--text-muted)">（数秒〜10秒程度かかります）</span>';
+        this.updateSpeechStatus('listening', 'Whisper解析中');
+
+        try {
+          transcript = await OpenAIClient.transcribeAudio(recording.blob, recording.mimeType);
+        } catch (whisperErr) {
+          console.error('[App] Whisper error:', whisperErr);
+          this.toast(`❌ Whisper文字起こし失敗: ${whisperErr.message}`, 'error');
+        }
+      } else {
+        // Web Speech APIの結果取得を試みる
+        try {
+          transcript = SpeechTranscriber.stop();
+        } catch(e) {
+          console.warn('[App] SpeechTranscriber.stop() error:', e);
+        }
+
+        // visibilitychange リスナー解除
+        if (this._visibilityRecovery) {
+          document.removeEventListener('visibilitychange', this._visibilityRecovery);
+          this._visibilityRecovery = null;
+        }
+      }
+
+      // === 処理フロー ===
       if (transcript && transcript.trim().length > 0) {
-        // ✅ Stage 1: Speech API成功 → テキストでSOAP生成
+        // 成功 → テキストでSOAP生成
         document.getElementById('liveTranscriptArea').classList.add('hidden');
         this.toast(`✅ 文字起こし完了（${transcript.length}文字）— SOAP生成中...`);
         await this.processTranscript(transcript);
       } else {
-        // Stage 2: Speech API失敗 → 手動入力 or Gemini音声送信を選択
-        console.log('[App] Speech API returned empty, showing options');
+        // 失敗 → フォールバックUI表示
+        console.log('[App] Transcript is empty, showing options');
         this.showTranscriptFallback(recording);
       }
     } catch (err) {
@@ -1507,6 +1557,9 @@ ${transcript}`;
     document.querySelectorAll('input[name="aiProvider"]').forEach(r => {
       r.checked = r.value === settings.aiProvider;
     });
+    document.querySelectorAll('input[name="speechEngine"]').forEach(r => {
+      r.checked = r.value === (settings.speechEngine || 'whisper');
+    });
   },
 
   saveSettings() {
@@ -1514,7 +1567,8 @@ ${transcript}`;
       geminiApiKey: document.getElementById('geminiApiKey').value.trim(),
       openaiApiKey: document.getElementById('openaiApiKey').value.trim(),
       gasUrl: document.getElementById('gasUrl').value.trim(),
-      aiProvider: document.querySelector('input[name="aiProvider"]:checked')?.value || 'gemini'
+      aiProvider: document.querySelector('input[name="aiProvider"]:checked')?.value || 'gemini',
+      speechEngine: document.querySelector('input[name="speechEngine"]:checked')?.value || 'whisper'
     };
     Config.save(settings);
     this.toast('💾 設定を保存しました');

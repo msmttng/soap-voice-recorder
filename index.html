@@ -30,7 +30,7 @@
     <!-- タブバー -->
     <nav id="tabBar" class="tab-bar">
       <button class="tab-btn active" data-tab="soap" onclick="App.switchTab('soap')">💊 SOAP</button>
-      <button class="tab-btn" data-tab="yakureki" onclick="App.switchTab('yakureki')">📋 AI薬歴</button>
+      <button class="tab-btn" data-tab="yakureki" onclick="App.switchTab('yakureki')">📋 音声テキスト</button>
     </nav>
 
     <!-- メイン画面: 録音 (SOAPタブ) -->
@@ -126,18 +126,6 @@
 
     <!-- AI薬歴タブ画面 -->
     <main id="yakurekiScreen" class="screen">
-      <!-- 患者選択 -->
-      <section id="yakurekiPatientArea" class="card hidden" style="border-color: rgba(37, 99, 235, 0.15);">
-        <div class="card-header">
-          <span class="card-icon">👤</span>
-          <h2>患者選択</h2>
-          <button id="yakurekiRefreshBtn" class="control-btn" style="margin:0; padding:6px 12px; font-size:12px;" onclick="App.loadPatients()">🔄</button>
-        </div>
-        <select id="yakurekiPatientSelect" style="width:100%; padding:10px; font-size:16px; border-radius:8px; border:1px solid var(--border); background:var(--surface); color:var(--text);">
-          <option value="">-- 患者を選択 --</option>
-        </select>
-      </section>
-
       <!-- 録音 -->
       <section class="card recorder-card">
         <div class="recording-visualizer" id="yakurekiVisualizer">
@@ -172,7 +160,7 @@
       <section id="yakurekiOutputArea" class="card hidden" style="border-color: rgba(52, 211, 153, 0.3);">
         <div class="card-header">
           <span class="card-icon">📋</span>
-          <h2>AI薬歴データ</h2>
+          <h2>文字起こしデータ</h2>
         </div>
         <div id="yakurekiOutput" style="font-size:14px; line-height:1.8; white-space:pre-wrap; padding:12px; background:var(--bg-input); border-radius:8px; max-height:300px; overflow-y:auto;"></div>
         <div style="display:flex; gap:8px; margin-top:12px;">
@@ -287,9 +275,9 @@
             <p class="hint">Google AI Studio で取得した無料キー</p>
           </div>
           <div class="setting-item">
-            <label for="openaiApiKey">OpenAI API Key（有料版）</label>
-            <input type="password" id="openaiApiKey" placeholder="sk-..." disabled>
-            <p class="hint">Phase 2 で使用（話者分離・デュアルAI）</p>
+            <label for="openaiApiKey">OpenAI API Key（有料）</label>
+            <input type="password" id="openaiApiKey" placeholder="sk-...">
+            <p class="hint">Whisper API（高精度音声認識）に使用</p>
           </div>
         </section>
 
@@ -303,15 +291,27 @@
         </section>
 
         <section class="card settings-card">
-          <h3>🔧 AIプロバイダー</h3>
+          <h3>🎙 音声認識・薬歴AI</h3>
           <div class="setting-item">
+            <label style="font-weight:600; font-size:13px; margin-bottom:4px; display:block;">音声認識エンジン</label>
+            <label>
+              <input type="radio" name="speechEngine" value="webSpeech">
+              ブラウザ標準（無料・不安定）
+            </label>
+            <label>
+              <input type="radio" name="speechEngine" value="whisper" checked>
+              OpenAI Whisper（有料・高精度）
+            </label>
+          </div>
+          <div class="setting-item" style="margin-top:12px;">
+            <label style="font-weight:600; font-size:13px; margin-bottom:4px; display:block;">SOAP生成AI</label>
             <label>
               <input type="radio" name="aiProvider" value="gemini" checked>
               Gemini（無料）
             </label>
             <label>
               <input type="radio" name="aiProvider" value="openai" disabled>
-              OpenAI（有料 — Phase 2）
+              OpenAI（開発中）
             </label>
           </div>
         </section>
