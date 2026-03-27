@@ -676,6 +676,8 @@ const App = {
     document.getElementById('yakurekiRecordBtn').addEventListener('click', () => this.yakurekiToggleRecording());
     document.getElementById('yakurekiCopyBtn').addEventListener('click', () => this.yakurekiCopy());
     document.getElementById('yakurekiClearBtn').addEventListener('click', () => this.yakurekiClear());
+    document.getElementById('yakurekiSaveBtn')?.addEventListener('click', () => this.yakurekiSave());
+    document.getElementById('refreshYakurekiPatientsBtn')?.addEventListener('click', () => this.loadPatients());
 
     document.querySelectorAll('.edit-btn').forEach(btn => {
       btn.addEventListener('click', () => this.toggleEdit(btn.dataset.target));
@@ -925,11 +927,16 @@ ${transcript}`;
 
   // --- AI薬歴: コピー ---
   async yakurekiCopy() {
-    const text = document.getElementById('yakurekiOutput').textContent;
+    let text = document.getElementById('yakurekiOutput').textContent;
     if (!text) {
       this.toast('⚠️ コピーするデータがありません', 'error');
       return;
     }
+    
+    if (this.yakurekiSelectedPatient) {
+      text = `【患者: ${this.yakurekiSelectedPatient.name}】\n\n` + text;
+    }
+    
     try {
       await navigator.clipboard.writeText(text);
       this.toast('📋 クリップボードにコピーしました');
@@ -943,6 +950,48 @@ ${transcript}`;
       document.body.removeChild(ta);
       this.toast('📋 コピーしました');
     }
+  },
+
+  // --- AI薬歴: 保存・登録 ---
+  async yakurekiSave() {
+    let text = document.getElementById('yakurekiOutput').textContent;
+    if (!text) {
+      this.toast('⚠️ 登録するデータがありません', 'error');
+      return;
+    }
+
+    const patientName = this.yakurekiSelectedPatient ? this.yakurekiSelectedPatient.name : '';
+    const nsipsRow = this.yakurekiSelectedPatient ? this.yakurekiSelectedPatient.row : null;
+
+    // SOAPのダミーデータとして登録
+    const mockSOAP = {
+      S: '参照: 音声テキスト',
+      O: '', A: '', P: '',
+      transcript: text,
+      summary: '音声テキスト記録'
+    };
+
+    try {
+      this.toast('💾 クラウドへ登録中...');
+      const result = await GASClient.saveSOAP(
+        mockSOAP, '', this.yakurekiRecorder ? this.yakurekiRecorder.getElapsedTime() : 0,
+        patientName, nsipsRow
+      );
+      if (result) {
+        this.toast(`💾 ☁️ ${patientName ? patientName + 'さんの' : ''}テキストを登録しました`);
+      } else {
+        this.toast('💾 ローカルに保存しました（GAS未設定）');
+      }
+    } catch (err) {
+      console.warn('[App] Cloud save failed:', err);
+      this.toast('💾 ローカル保存済み（クラウド保存失敗）', 'error');
+    }
+
+    this.yakurekiSelectedPatient = null;
+    if (document.getElementById('yakurekiPatientSelect')) {
+      document.getElementById('yakurekiPatientSelect').value = '';
+    }
+    this.loadPatients();
   },
 
   // --- AI薬歴: クリア ---
@@ -1365,16 +1414,19 @@ ${transcript}`;
   // --- NSIPS 患者選択 ---
   async loadPatients() {
     const settings = Config.load();
+    const pArea = document.getElementById('patientSelectArea');
+    const yArea = document.getElementById('yakurekiPatientSelectArea');
+    
     if (!settings.gasUrl) {
-      document.getElementById('patientSelectArea').classList.add('hidden');
+      if (pArea) pArea.classList.add('hidden');
+      if (yArea) yArea.classList.add('hidden');
       return;
     }
 
     const btn = document.getElementById('refreshPatientsBtn');
-    if (btn) {
-      btn.textContent = '⏳ 更新中...';
-      btn.disabled = true;
-    }
+    const yBtn = document.getElementById('refreshYakurekiPatientsBtn');
+    if (btn) { btn.textContent = '⏳ 更新中...'; btn.disabled = true; }
+    if (yBtn) { yBtn.textContent = '⏳ 更新中...'; yBtn.disabled = true; }
 
     try {
       // キャッシュを回避するためにタイムスタンプを付与
@@ -1382,16 +1434,20 @@ ${transcript}`;
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const data = await response.json();
       
-      document.getElementById('patientSelectArea').classList.remove('hidden');
+      if (pArea) pArea.classList.remove('hidden');
+      if (yArea) yArea.classList.remove('hidden');
 
       if (data.success && data.patients && data.patients.length > 0) {
         this.renderPatients(data.patients);
         this.toast('✅ 最新の患者情報を受信しました');
       } else {
         const select = document.getElementById('patientSelect');
+        const ySelect = document.getElementById('yakurekiPatientSelect');
         if (select) select.innerHTML = '<option value="">(待機中のNSIPSデータはありません)</option>';
+        if (ySelect) ySelect.innerHTML = '<option value="">(待機中のNSIPSデータはありません)</option>';
         this._patientMap = {};
         this.selectedPatient = null;
+        this.yakurekiSelectedPatient = null;
         this.toast('ℹ️ 待機中のデータはありません');
       }
     } catch (err) {
@@ -1407,30 +1463,54 @@ ${transcript}`;
 
   renderPatients(patients) {
     const select = document.getElementById('patientSelect');
-    select.innerHTML = '<option value="">-- 患者を選択 --</option>';
+    const ySelect = document.getElementById('yakurekiPatientSelect');
+    if (select) select.innerHTML = '<option value="">-- 患者を選択 --</option>';
+    if (ySelect) ySelect.innerHTML = '<option value="">-- 患者を選択 --</option>';
     
     // 患者データをマップに保存
     this._patientMap = {};
     patients.forEach(p => {
       this._patientMap[p.row] = p;
-      const opt = document.createElement('option');
-      opt.value = p.row;
-      opt.textContent = p.name;
-      select.appendChild(opt);
+      if (select) {
+        const opt = document.createElement('option');
+        opt.value = p.row;
+        opt.textContent = p.name;
+        select.appendChild(opt);
+      }
+      if (ySelect) {
+        const opt = document.createElement('option');
+        opt.value = p.row;
+        opt.textContent = p.name;
+        ySelect.appendChild(opt);
+      }
     });
 
     // 選択イベント
-    select.onchange = () => {
-      const row = select.value;
-      if (row && this._patientMap[row]) {
-        const patient = this._patientMap[row];
-        this.selectedPatient = patient;
-        document.getElementById('drugInput').value = patient.drug_summary || '';
-        this.toast(`👤 ${patient.name} さんを選択しました`);
-      } else {
-        this.selectedPatient = null;
-      }
-    };
+    if (select) {
+      select.onchange = () => {
+        const row = select.value;
+        if (row && this._patientMap[row]) {
+          const patient = this._patientMap[row];
+          this.selectedPatient = patient;
+          document.getElementById('drugInput').value = patient.drug_summary || '';
+          this.toast(`👤 ${patient.name} さんを選択しました`);
+        } else {
+          this.selectedPatient = null;
+        }
+      };
+    }
+    
+    if (ySelect) {
+      ySelect.onchange = () => {
+        const row = ySelect.value;
+        if (row && this._patientMap[row]) {
+          this.yakurekiSelectedPatient = this._patientMap[row];
+          this.toast(`👤 ${this.yakurekiSelectedPatient.name} さんを選択しました`);
+        } else {
+          this.yakurekiSelectedPatient = null;
+        }
+      };
+    }
   },
 
   togglePause() {

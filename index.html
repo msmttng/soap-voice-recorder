@@ -126,6 +126,18 @@
 
     <!-- AI薬歴タブ画面 -->
     <main id="yakurekiScreen" class="screen">
+      <!-- NSIPS患者選択 (音声テキスト用) -->
+      <section id="yakurekiPatientSelectArea" class="card hidden" style="border-color: rgba(37, 99, 235, 0.15);">
+        <div class="card-header">
+          <span class="card-icon">👤</span>
+          <h2>患者選択</h2>
+          <button id="refreshYakurekiPatientsBtn" class="control-btn" style="margin:0; padding:6px 12px; font-size:12px;">🔄 更新</button>
+        </div>
+        <select id="yakurekiPatientSelect" style="width:100%; padding:10px; font-size:16px; border-radius:8px; border:1px solid var(--border); background:var(--surface); color:var(--text);">
+          <option value="">-- 患者を選択 --</option>
+        </select>
+      </section>
+
       <!-- 録音 -->
       <section class="card recorder-card">
         <div class="recording-visualizer" id="yakurekiVisualizer">
@@ -163,8 +175,9 @@
           <h2>文字起こしデータ</h2>
         </div>
         <div id="yakurekiOutput" style="font-size:14px; line-height:1.8; white-space:pre-wrap; padding:12px; background:var(--bg-input); border-radius:8px; max-height:300px; overflow-y:auto;"></div>
-        <div style="display:flex; gap:8px; margin-top:12px;">
-          <button id="yakurekiCopyBtn" class="action-btn primary-btn" style="flex:1;">📋 クリップボードにコピー</button>
+        <div style="display:flex; gap:8px; margin-top:12px; flex-wrap:wrap;">
+          <button id="yakurekiSaveBtn" class="action-btn primary-btn" style="flex:1; min-width:45%;">💾 テキストを登録</button>
+          <button id="yakurekiCopyBtn" class="action-btn secondary-btn" style="flex:1; min-width:45%;">📋 コピー</button>
           <button id="yakurekiClearBtn" class="action-btn" style="flex:0; padding:10px 16px; background:var(--surface); border:1px solid var(--border); color:var(--text);">🗑</button>
         </div>
       </section>

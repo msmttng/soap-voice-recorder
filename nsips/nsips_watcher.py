@@ -1,11 +1,11 @@
-"""
+r"""
 nsips_watcher.py — NSIPSフォルダ監視 + GAS送信スクリプト
 
 レセコンが出力するNSIPSフォルダを監視し、
 新しいDATAファイルが検出されたらパースしてGASに送信するデーモン。
 
 使い方:
-  python nsips_watcher.py --folder C:\\NSIPS --gas-url https://script.google.com/macros/s/xxx/exec
+  python nsips_watcher.py --folder C:\NSIPS --gas-url https://script.google.com/macros/s/xxx/exec
 
 設定ファイル（nsips_config.json）でも指定可能。
 """
@@ -52,7 +52,7 @@ def send_to_gas(gas_url: str, data: dict) -> bool:
         "doctor": data["doctor"],
         "prescription_date": data["prescription_date"],
         "drug_summary": data["drug_summary"],
-        "prescriptions": data["prescriptions"],
+        "prescriptions": data.get("drugs", []),
         "timestamp": datetime.now().isoformat()
     }, ensure_ascii=False).encode('utf-8')
 
@@ -82,9 +82,11 @@ def watch_folder(folder: str, gas_url: str, poll_interval: int = DEFAULT_POLL_IN
     folder_path = Path(folder)
     
     if not folder_path.exists():
-        print(f'[ERROR] フォルダが存在しません: {folder}')
-        print(f'  作成しますか？ フォルダを作成して再実行してください。')
-        sys.exit(1)
+        print(f'[WARNING] フォルダが存在しません: {folder}')
+        print(f'  ネットワークドライブの接続を待機しています（10秒ごとに再確認します）...')
+        while not folder_path.exists():
+            time.sleep(10)
+        print(f'[INFO] フォルダを検出しました！')
 
     print(f'[NSIPS Watcher] 監視開始')
     print(f'  フォルダ: {folder}')
@@ -98,73 +100,79 @@ def watch_folder(folder: str, gas_url: str, poll_interval: int = DEFAULT_POLL_IN
 
     while True:
         try:
-            index_dir = folder_path / 'INDEX'
-            data_dir = folder_path / 'DATA'
+            # 直下とSIPS*サブディレクトリを対象とする
+            base_dirs = [folder_path] + list(folder_path.glob('SIPS*'))
+            for base in base_dirs:
+                if not base.is_dir():
+                    continue
+                    
+                index_dir = base / 'INDEX'
+                data_dir = base / 'DATA'
 
-            # フォルダが存在する場合のみ監視
-            if index_dir.exists() and data_dir.exists():
-                # INDEX フォルダ内のファイルをフラグとして探す
-                for pattern in ['*.txt', '*.dat', '*.DAT']:
-                    for index_file in index_dir.glob(pattern):
-                        if not index_file.is_file():
-                            continue
-                        
-                        # 対応する DATA ファイルのパス
-                        data_file = data_dir / index_file.name
-                        
-                        # DATA ファイルが存在しない場合は処理を待つ
-                        if not data_file.exists():
-                            continue
-                        
-                        mtime = index_file.stat().st_mtime
-                        file_key = str(index_file)
-                        
-                        # 新しいファイルまたは更新されたファイル
-                        if file_key not in last_mtime or last_mtime[file_key] < mtime:
-                            last_mtime[file_key] = mtime
+                # フォルダが存在する場合のみ監視
+                if index_dir.exists() and data_dir.exists():
+                    # INDEX フォルダ内のファイルをフラグとして探す
+                    for pattern in ['*.txt', '*.dat', '*.DAT']:
+                        for index_file in index_dir.glob(pattern):
+                            if not index_file.is_file():
+                                continue
                             
-                            print(f'[{datetime.now().strftime("%H:%M:%S")}] INDEXフラグ検出: {index_file.name}')
+                            # 対応する DATA ファイルのパス
+                            data_file = data_dir / index_file.name
                             
-                            try:
-                                # 対象の DATA ファイルをパースする
-                                data = parse_nsips_file(str(data_file))
+                            # DATA ファイルが存在しない場合は処理を待つ
+                            if not data_file.exists():
+                                continue
+                            
+                            mtime = index_file.stat().st_mtime
+                            file_key = str(index_file)
+                            
+                            # 新しいファイルまたは更新されたファイル
+                            if file_key not in last_mtime or last_mtime[file_key] < mtime:
+                                last_mtime[file_key] = mtime
                                 
-                                patient_name = data["patient"]["name"]
-                                drug_count = len(data.get("drugs", []))
+                                print(f'[{datetime.now().strftime("%H:%M:%S")}] INDEXフラグ検出: {index_file.name} (in {base.name})')
                                 
-                                print(f'  患者: {patient_name}')
-                                print(f'  処方: {drug_count}剤')
-                                print(f'  処方日: {data["prescription_date"]}')
-                                print(f'  薬品:')
-                                for line in data["drug_summary"].split('\\n'):
-                                    print(f'    {line}')
-                                
-                                # GASに送信
-                                if gas_url:
-                                    print(f'  → GASに送信中...')
-                                    success = send_to_gas(gas_url, data)
-                                    if success:
-                                        print(f'  ✅ 送信完了')
-                                    else:
-                                        print(f'  ❌ 送信失敗')
-                                else:
-                                    print(f'  ⚠️ GAS URL未設定（ローカル表示のみ）')
-                                
-                                print()
-                                
-                                # NSIPS通信仕様: 処理完了後にDATA/INDEX両方のファイルを削除
                                 try:
-                                    os.remove(data_file)
-                                    print(f"  🗑️ DATAファイルを削除しました: {data_file.name}")
+                                    # 対象の DATA ファイルをパースする
+                                    data = parse_nsips_file(str(data_file))
                                     
-                                    os.remove(index_file)
-                                    print(f"  🗑️ INDEXファイルを削除しました: {index_file.name}")
-                                except Exception as del_e:
-                                    print(f"  ❌ ファイル削除中にエラー: {del_e}")
-                                
-                            except Exception as e:
-                                print(f'  ❌ パースエラー: {e}')
-                                print()
+                                    patient_name = data["patient"]["name"]
+                                    drug_count = len(data.get("drugs", []))
+                                    
+                                    print(f'  患者: {patient_name}')
+                                    print(f'  処方: {drug_count}剤')
+                                    print(f'  処方日: {data["prescription_date"]}')
+                                    print(f'  薬品:')
+                                    for line in data["drug_summary"].split('\n'):
+                                        print(f'    {line}')
+                                    
+                                    # GASに送信
+                                    if gas_url:
+                                        print(f'  → GASに送信中...')
+                                        success = send_to_gas(gas_url, data)
+                                        if success:
+                                            print(f'  ✅ 送信完了')
+                                        else:
+                                            print(f'  ❌ 送信失敗')
+                                    else:
+                                        print(f'  ⚠️ GAS URL未設定（ローカル表示のみ）')
+                                    
+                                    print()
+                                    
+                                    # NSIPS通信仕様: 処理完了後にDATA/INDEX両方のファイルを削除
+                                    try:
+                                        os.remove(data_file)
+                                        print(f"  🗑️ DATAファイルを削除しました: {data_file.name}")
+                                        
+                                        os.remove(index_file)
+                                        print(f"  🗑️ INDEXファイルを削除しました: {index_file.name}")
+                                    except Exception as del_e:
+                                        print(f"  ❌ ファイル削除中にエラー: {del_e}")
+                                    
+                                except Exception as e:
+                                    print(f'  ❌ パースエラー: {e}')
+                                    print()
             
             time.sleep(poll_interval)
             
