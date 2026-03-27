@@ -1371,7 +1371,8 @@ ${transcript}`;
     }
 
     try {
-      const response = await fetch(`${settings.gasUrl}?action=patients`);
+      // キャッシュを回避するためにタイムスタンプを付与
+      const response = await fetch(`${settings.gasUrl}?action=patients&t=${Date.now()}`);
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const data = await response.json();
       
