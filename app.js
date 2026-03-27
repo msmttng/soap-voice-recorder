@@ -1370,21 +1370,38 @@ ${transcript}`;
       return;
     }
 
+    const btn = document.getElementById('refreshPatientsBtn');
+    if (btn) {
+      btn.textContent = '⏳ 更新中...';
+      btn.disabled = true;
+    }
+
     try {
       // キャッシュを回避するためにタイムスタンプを付与
       const response = await fetch(`${settings.gasUrl}?action=patients&t=${Date.now()}`);
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const data = await response.json();
       
+      document.getElementById('patientSelectArea').classList.remove('hidden');
+
       if (data.success && data.patients && data.patients.length > 0) {
-        document.getElementById('patientSelectArea').classList.remove('hidden');
         this.renderPatients(data.patients);
+        this.toast('✅ 最新の患者情報を受信しました');
       } else {
-        document.getElementById('patientSelectArea').classList.add('hidden');
+        const select = document.getElementById('patientSelect');
+        if (select) select.innerHTML = '<option value="">(待機中のNSIPSデータはありません)</option>';
+        this._patientMap = {};
+        this.selectedPatient = null;
+        this.toast('ℹ️ 待機中のデータはありません');
       }
     } catch (err) {
       console.warn('[App] Patient list fetch failed:', err);
-      document.getElementById('patientSelectArea').classList.add('hidden');
+      this.toast('❌ リストの更新に失敗しました', 'error');
+    } finally {
+      if (btn) {
+        btn.textContent = '🔄 更新';
+        btn.disabled = false;
+      }
     }
   },
 
