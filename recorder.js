@@ -56,14 +56,27 @@ class AudioRecorder {
    */
   async start() {
     try {
-      // マイクアクセスを要求
-      this.stream = await navigator.mediaDevices.getUserMedia({
+      // マイクAPIの事前チェック
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        throw new Error('このブラウザはマイクAPIに対応していません。HTTPSでアクセスしているか確認してください。');
+      }
+
+      // マイクアクセスを要求（10秒タイムアウト付き）
+      const getUserMediaPromise = navigator.mediaDevices.getUserMedia({
         audio: {
           echoCancellation: true,
           noiseSuppression: true,
           autoGainControl: true
         }
       });
+
+      const timeoutPromise = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error(
+          'マイクへのアクセスがタイムアウトしました。ブラウザのアドレスバー付近に表示される許可ダイアログを確認してください。'
+        )), 10000)
+      );
+
+      this.stream = await Promise.race([getUserMediaPromise, timeoutPromise]);
 
       // AudioContext & Analyser（波形表示用）
       this.audioContext = new (window.AudioContext || window.webkitAudioContext)();

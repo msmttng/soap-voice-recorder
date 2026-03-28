@@ -739,6 +739,10 @@ const App = {
       const settings = Config.load();
       const useWhisper = settings.speechEngine === 'whisper';
 
+      // ★ 即座にUIフィードバック（getUserMedia待ちの間もユーザーに状態を伝える）
+      document.getElementById('yakurekiRecordLabel').textContent = '🎙 マイク起動中...';
+      document.getElementById('yakurekiRecordBtn').style.opacity = '0.6';
+
       // マイク録音開始（音声Blob用 — iOSフォールバック用に常に保持）
       await this.yakurekiRecorder.start();
 
@@ -780,7 +784,9 @@ const App = {
       document.getElementById('yakurekiRecordLabel').textContent = 'タップして停止';
       this.toast('🎤 録音開始');
     } catch (err) {
-      this.toast('❌ マイクへのアクセスに失敗しました', 'error');
+      document.getElementById('yakurekiRecordBtn').style.opacity = '';
+      document.getElementById('yakurekiRecordLabel').textContent = 'タップして録音開始';
+      this.toast(`❌ ${err.message}`, 'error');
       console.error('[Yakureki] Start error:', err);
     }
   },
@@ -1106,8 +1112,13 @@ ${transcript}`;
       const settings = Config.load();
       const useWhisper = settings.speechEngine === 'whisper';
 
+      // ★ 即座にUIフィードバック（getUserMedia待ちの間もユーザーに状態を伝える）
+      document.getElementById('recordLabel').textContent = '🎙 マイク起動中...';
+      document.getElementById('recordBtn').style.opacity = '0.6';
+
       // マイク録音開始（波形表示 + 音声バックアップ用）
       await this.recorder.start();
+      document.getElementById('recordBtn').style.opacity = '';
       this.lastRecording = null;
 
       // レコーダーのステータス変更をUIに反映
@@ -1163,6 +1174,8 @@ ${transcript}`;
       this.startWaveformAnimation();
       this.toast('🎙️ 録音開始（画面ロック防止ON）');
     } catch (err) {
+      document.getElementById('recordBtn').style.opacity = '';
+      document.getElementById('recordLabel').textContent = 'タップして録音開始';
       this.toast(`❌ ${err.message}`, 'error');
     }
   },
