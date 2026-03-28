@@ -20,7 +20,8 @@ const Config = {
     openaiApiKey: '',
     gasUrl: '',
     aiProvider: 'gemini',
-    speechEngine: 'whisper'
+    speechEngine: 'whisper',
+    micDeviceId: 'default'
   },
 
   load() {
@@ -635,15 +636,16 @@ const App = {
   currentTab: 'soap',
   yakurekiTranscript: '',
 
-  init() {
+  async init() {
     this.recorder = new AudioRecorder();
     this.yakurekiRecorder = new AudioRecorder();
     this.bindEvents();
-    this.loadSettings();
     this.renderHistory();
     this.initCanvas();
     this.checkSpeechSupport();
     this.loadPatients();
+    await this.loadMicrophones();
+    this.loadSettings();
     console.log('[App] Initialized');
   },
 
@@ -678,6 +680,7 @@ const App = {
     document.getElementById('yakurekiClearBtn').addEventListener('click', () => this.yakurekiClear());
     document.getElementById('yakurekiSaveBtn')?.addEventListener('click', () => this.yakurekiSave());
     document.getElementById('refreshYakurekiPatientsBtn')?.addEventListener('click', () => this.loadPatients());
+    document.getElementById('refreshMicsBtn')?.addEventListener('click', () => this.loadMicrophones(true));
 
     document.querySelectorAll('.edit-btn').forEach(btn => {
       btn.addEventListener('click', () => this.toggleEdit(btn.dataset.target));
@@ -738,13 +741,14 @@ const App = {
     try {
       const settings = Config.load();
       const useWhisper = settings.speechEngine === 'whisper';
+      const deviceId = settings.micDeviceId !== 'default' ? settings.micDeviceId : null;
 
       // ★ 即座にUIフィードバック（getUserMedia待ちの間もユーザーに状態を伝える）
       document.getElementById('yakurekiRecordLabel').textContent = '🎙 マイク起動中...';
       document.getElementById('yakurekiRecordBtn').style.opacity = '0.6';
 
       // マイク録音開始（音声Blob用 — iOSフォールバック用に常に保持）
-      await this.yakurekiRecorder.start();
+      await this.yakurekiRecorder.start(deviceId);
 
       // タイマー表示
       this.yakurekiRecorder.onStatusChange = (status, detail) => {
@@ -1002,11 +1006,91 @@ ${transcript}`;
 
   // --- AI薬歴: クリア ---
   yakurekiClear() {
-    document.getElementById('yakurekiOutput').textContent = '';
-    document.getElementById('yakurekiOutputArea').classList.add('hidden');
-    document.getElementById('yakurekiTranscriptArea').classList.add('hidden');
     this.yakurekiTranscript = '';
-    this.toast('🗑 クリアしました');
+    document.getElementById('yakurekiOutputArea').classList.add('hidden');
+    document.getElementById('yakurekiOutput').innerHTML = '';
+    this.toast('📝 クリアしました');
+  },
+
+  /**
+   * マイク一覧の取得とセレクトボックスの更新
+   */
+  async loadMicrophones(forceRequest = false) {
+    const select = document.getElementById('micDeviceSelect');
+    const warning = document.getElementById('micPermissionWarning');
+    if (!select) return;
+
+    try {
+      if (forceRequest) {
+        // 許可を得るために一時的にマイクをリクエスト
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true }).catch(err => {
+          if (err.name === 'NotAllowedError') {
+            this.toast('❌ マイクのアクセスがブロックされています。ブラウザの設定から許可してください。', 'error');
+          }
+          return null;
+        });
+        if (stream) {
+          stream.getTracks().forEach(track => track.stop());
+        }
+      }
+
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const audioInputs = devices.filter(device => device.kind === 'audioinput');
+
+      select.innerHTML = '<option value="default">既定のマイク (Default)</option>';
+      
+      const settings = Config.load();
+      let hasSelectedDevice = false;
+      let hasEmptyLabels = false;
+
+      audioInputs.forEach((device, index) => {
+        if (device.deviceId && device.deviceId !== 'default' && device.deviceId !== 'communications') {
+          const option = document.createElement('option');
+          option.value = device.deviceId;
+          // 空の場合は「マイク 1」のようにラベル付け
+          if (!device.label) hasEmptyLabels = true;
+          option.textContent = device.label || `マイク ${index + 1}`;
+          
+          if (settings.micDeviceId === device.deviceId) {
+            option.selected = true;
+            hasSelectedDevice = true;
+          }
+          select.appendChild(option);
+        }
+      });
+
+      if (warning) {
+        if (hasEmptyLabels) {
+          warning.classList.remove('hidden');
+        } else {
+          warning.classList.add('hidden');
+        }
+      }
+
+      if (settings.micDeviceId !== 'default' && !hasSelectedDevice && audioInputs.length > 0) {
+        if (!hasEmptyLabels) {
+          settings.micDeviceId = 'default';
+          Config.save(settings);
+        } else {
+          // 権限がないだけの可能性があるため復元用オプションを追加
+          const option = document.createElement('option');
+          option.value = settings.micDeviceId;
+          option.textContent = '選択中のマイク (名前非表示)';
+          option.selected = true;
+          select.appendChild(option);
+        }
+      }
+
+      if (forceRequest) {
+        this.toast('🎙 マイク一覧を更新しました');
+      }
+    } catch (err) {
+      console.warn('[App] Failed to load microphones:', err);
+      if (forceRequest) {
+        this.toast('❌ マイク一覧の取得に失敗しました。権限を確認してください。', 'error');
+      }
+      if (warning) warning.classList.remove('hidden');
+    }
   },
 
   /**
@@ -1030,6 +1114,14 @@ ${transcript}`;
     const isMainScreen = (screenId === 'recordScreen' || screenId === 'yakurekiScreen');
     document.getElementById('header').style.display = isMainScreen ? '' : 'none';
     document.getElementById('tabBar').style.display = isMainScreen ? '' : 'none';
+
+    // 設定画面を開いたときにマイク一覧が（権限不足で）不完全な場合、自動取得を試みる
+    if (screenId === 'settingsScreen') {
+      const select = document.getElementById('micDeviceSelect');
+      if (select && (select.options.length <= 1 || (select.options.length > 0 && select.options[select.options.length-1].text.startsWith('マイク ')))) {
+        this.loadMicrophones(true);
+      }
+    }
   },
 
   // --- Canvas ---
@@ -1111,13 +1203,14 @@ ${transcript}`;
     try {
       const settings = Config.load();
       const useWhisper = settings.speechEngine === 'whisper';
+      const deviceId = settings.micDeviceId !== 'default' ? settings.micDeviceId : null;
 
       // ★ 即座にUIフィードバック（getUserMedia待ちの間もユーザーに状態を伝える）
       document.getElementById('recordLabel').textContent = '🎙 マイク起動中...';
       document.getElementById('recordBtn').style.opacity = '0.6';
 
       // マイク録音開始（波形表示 + 音声バックアップ用）
-      await this.recorder.start();
+      await this.recorder.start(deviceId);
       document.getElementById('recordBtn').style.opacity = '';
       this.lastRecording = null;
 
@@ -1671,6 +1764,14 @@ ${transcript}`;
     document.querySelectorAll('input[name="speechEngine"]').forEach(r => {
       r.checked = r.value === (settings.speechEngine || 'whisper');
     });
+
+    const micSelect = document.getElementById('micDeviceSelect');
+    if (micSelect && settings.micDeviceId) {
+      // 選択肢が描画されるのを少し待つ
+      setTimeout(() => {
+        micSelect.value = settings.micDeviceId;
+      }, 500);
+    }
   },
 
   saveSettings() {
@@ -1679,7 +1780,8 @@ ${transcript}`;
       openaiApiKey: document.getElementById('openaiApiKey').value.trim(),
       gasUrl: document.getElementById('gasUrl').value.trim(),
       aiProvider: document.querySelector('input[name="aiProvider"]:checked')?.value || 'gemini',
-      speechEngine: document.querySelector('input[name="speechEngine"]:checked')?.value || 'whisper'
+      speechEngine: document.querySelector('input[name="speechEngine"]:checked')?.value || 'whisper',
+      micDeviceId: document.getElementById('micDeviceSelect')?.value || 'default'
     };
     Config.save(settings);
     this.toast('💾 設定を保存しました');

@@ -317,6 +317,17 @@
             </label>
           </div>
           <div class="setting-item" style="margin-top:12px;">
+            <label style="font-weight:600; font-size:13px; margin-bottom:4px; display:block;">マイク選択</label>
+            <div style="display:flex; gap:8px;">
+              <select id="micDeviceSelect" style="flex:1; padding:8px; border-radius:6px; border:1px solid rgba(0,0,0,0.1); font-family:var(--font-main); font-size:13px;">
+                <option value="default">既定のマイク (Default)</option>
+              </select>
+              <button id="refreshMicsBtn" class="control-btn" style="margin:0; padding:8px 12px; font-size:12px;">🔄 更新</button>
+            </div>
+            <p id="micPermissionWarning" class="hint hidden" style="color:var(--danger); margin-top:6px; font-weight:500;">⚠️ マイクの正確な名前を取得するには権限が必要です。「更新」を押して許可してください。</p>
+          </div>
+
+          <div class="setting-item" style="margin-top:12px;">
             <label style="font-weight:600; font-size:13px; margin-bottom:4px; display:block;">SOAP生成AI</label>
             <label>
               <input type="radio" name="aiProvider" value="gemini" checked>
