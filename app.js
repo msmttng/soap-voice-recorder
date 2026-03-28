@@ -740,7 +740,8 @@ const App = {
 
     try {
       const settings = Config.load();
-      const useWhisper = settings.speechEngine === 'whisper';
+      const engine = settings.speechEngine || 'whisper';
+      const isCloudEngine = engine === 'whisper' || engine === 'gemini';
       const deviceId = settings.micDeviceId !== 'default' ? settings.micDeviceId : null;
 
       // ★ 即座にUIフィードバック（getUserMedia待ちの間もユーザーに状態を伝える）
@@ -759,7 +760,7 @@ const App = {
         if (el) el.textContent = this.yakurekiRecorder.getFormattedTime();
       }, 500);
 
-      if (!useWhisper) {
+      if (!isCloudEngine) {
         // Web Speech API も並行開始（失敗しても録音は続行）
         try {
           SpeechTranscriber.start(
@@ -777,8 +778,10 @@ const App = {
           console.warn('[Yakureki] Speech API not available:', speechErr);
           document.getElementById('yakurekiTranscriptText').textContent = '🎤 録音中（音声認識非対応 — AI文字起こしを使用）';
         }
-      } else {
+      } else if (engine === 'whisper') {
         document.getElementById('yakurekiTranscriptText').innerHTML = '🎙 録音中...<br><span style="font-size:12px; color:var(--text-muted)">（終了後にWhisper高精度エンジンで一括文字起こしを実行します）</span>';
+      } else if (engine === 'gemini') {
+        document.getElementById('yakurekiTranscriptText').innerHTML = '🎙 録音中...<br><span style="font-size:12px; color:var(--text-muted)">（終了後にGemini高精度エンジンで一括文字起こしを実行します）</span>';
       }
 
       // UI更新
@@ -815,10 +818,11 @@ const App = {
     this.stopYakurekiWaveformAnimation();
 
     const settings = Config.load();
-    const useWhisper = settings.speechEngine === 'whisper';
+    const engine = settings.speechEngine || 'whisper';
+    const isCloudEngine = engine === 'whisper' || engine === 'gemini';
     let speechText = '';
 
-    if (useWhisper) {
+    if (engine === 'whisper') {
         document.getElementById('yakurekiTranscriptText').innerHTML = '⏳ OpenAI Whisperで文字起こし中...<br><span style="font-size:12px; color:var(--text-muted)">（数秒〜10秒程度かかります）</span>';
         try {
           speechText = await OpenAIClient.transcribeAudio(recording.blob, recording.mimeType);
@@ -826,6 +830,15 @@ const App = {
         } catch (whisperErr) {
           console.error('[Yakureki] Whisper error:', whisperErr);
           document.getElementById('yakurekiTranscriptText').textContent = `❌ Whisper文字起こし失敗: ${whisperErr.message}`;
+        }
+    } else if (engine === 'gemini') {
+        document.getElementById('yakurekiTranscriptText').innerHTML = '⏳ Gemini 2.0で文字起こし中...<br><span style="font-size:12px; color:var(--text-muted)">（数秒〜15秒程度かかります）</span>';
+        try {
+          speechText = await GeminiClient.transcribeAudio(recording.blob, recording.mimeType);
+          document.getElementById('yakurekiTranscriptText').textContent = speechText;
+        } catch (geminiErr) {
+          console.error('[Yakureki] Gemini error:', geminiErr);
+          document.getElementById('yakurekiTranscriptText').textContent = `❌ Gemini文字起こし失敗: ${geminiErr.message}`;
         }
     } else {
       // Speech API 停止
@@ -835,13 +848,13 @@ const App = {
     }
 
     // === 2段階方式 ===
-    const transcript = speechText || (!useWhisper ? this.yakurekiTranscript : '');
+    const transcript = speechText || (!isCloudEngine ? this.yakurekiTranscript : '');
 
     if (transcript && transcript.trim().length > 0) {
       // ✅ Stage 1: API成功 → テキストでAI薬歴生成
       this.toast(`✅ 文字起こし完了（${transcript.length}文字）`);
       await this.yakurekiGenerateSummary(transcript);
-    } else if (recording && recording.blob && recording.blob.size > 0 && !useWhisper) {
+    } else if (recording && recording.blob && recording.blob.size > 0 && !isCloudEngine) {
       // ✅ Stage 2: (WebSpeech利用時のみのフォールバック) 音声をGeminiで文字起こし
       this.toast('🧠 音声をAIで文字起こし中...');
       document.getElementById('yakurekiTranscriptText').textContent = '⏳ AIが音声を文字起こし中...';
@@ -1259,7 +1272,8 @@ ${transcript}`;
   async startRecording() {
     try {
       const settings = Config.load();
-      const useWhisper = settings.speechEngine === 'whisper';
+      const engine = settings.speechEngine || 'whisper';
+      const isCloudEngine = engine === 'whisper' || engine === 'gemini';
       const deviceId = settings.micDeviceId !== 'default' ? settings.micDeviceId : null;
 
       // ★ 即座にUIフィードバック（getUserMedia待ちの間もユーザーに状態を伝える）
@@ -1276,7 +1290,7 @@ ${transcript}`;
         this.updateRecorderStatus(status, detail);
       };
 
-      if (!useWhisper) {
+      if (!isCloudEngine) {
         // リアルタイム音声認識も同時開始（失敗しても録音は続行）
         try {
           SpeechTranscriber.start(
@@ -1313,9 +1327,12 @@ ${transcript}`;
       // リアルタイム表示エリアを表示
       document.getElementById('liveTranscriptArea').classList.remove('hidden');
       
-      if (useWhisper) {
+      if (engine === 'whisper') {
         document.getElementById('liveTranscriptText').innerHTML = '🎙 録音中...<br><span style="font-size:12px; color:var(--text-muted)">（終了後にWhisper高精度エンジンで一括文字起こしを実行します）</span>';
         this.updateSpeechStatus('listening', 'Whisper録音中');
+      } else if (engine === 'gemini') {
+        document.getElementById('liveTranscriptText').innerHTML = '🎙 録音中...<br><span style="font-size:12px; color:var(--text-muted)">（終了後にGemini高精度エンジンで一括文字起こしを実行します）</span>';
+        this.updateSpeechStatus('listening', 'Gemini録音中');
       } else {
         document.getElementById('liveTranscriptText').textContent = '🎤 音声を認識中...';
         this.updateSpeechStatus('listening', '音声認識中');
@@ -1333,7 +1350,7 @@ ${transcript}`;
   async stopRecording() {
     try {
       const settings = Config.load();
-      const useWhisper = settings.speechEngine === 'whisper';
+      const engine = settings.speechEngine || 'whisper';
 
       // 録音停止 → Blobを取得
       const recording = await this.recorder.stop();
@@ -1351,7 +1368,7 @@ ${transcript}`;
 
       let transcript = '';
 
-      if (useWhisper) {
+      if (engine === 'whisper') {
         // Whisper APIへ送信
         const liveArea = document.getElementById('liveTranscriptArea');
         liveArea.classList.remove('hidden');
@@ -1363,6 +1380,19 @@ ${transcript}`;
         } catch (whisperErr) {
           console.error('[App] Whisper error:', whisperErr);
           this.toast(`❌ Whisper文字起こし失敗: ${whisperErr.message}`, 'error');
+        }
+      } else if (engine === 'gemini') {
+        // Gemini APIへ送信
+        const liveArea = document.getElementById('liveTranscriptArea');
+        liveArea.classList.remove('hidden');
+        document.getElementById('liveTranscriptText').innerHTML = '⏳ Gemini 2.0で文字起こし中...<br><span style="font-size:12px; color:var(--text-muted)">（数秒〜15秒程度かかります）</span>';
+        this.updateSpeechStatus('listening', 'Gemini解析中');
+
+        try {
+          transcript = await GeminiClient.transcribeAudio(recording.blob, recording.mimeType);
+        } catch (geminiErr) {
+          console.error('[App] Gemini transcription error:', geminiErr);
+          this.toast(`❌ Gemini文字起こし失敗: ${geminiErr.message}`, 'error');
         }
       } else {
         // Web Speech APIの結果取得を試みる
