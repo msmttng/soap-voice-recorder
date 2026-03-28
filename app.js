@@ -987,6 +987,7 @@ ${transcript}`;
 
     const patientName = this.yakurekiSelectedPatient ? this.yakurekiSelectedPatient.name : '';
     const nsipsRow = this.yakurekiSelectedPatient ? this.yakurekiSelectedPatient.row : null;
+    const duration = this.yakurekiRecorder ? this.yakurekiRecorder.getElapsedTime() : 0;
 
     // SOAPのダミーデータとして登録
     const mockSOAP = {
@@ -999,14 +1000,24 @@ ${transcript}`;
     try {
       this.toast('💾 クラウドへ登録中...');
       const result = await GASClient.saveSOAP(
-        mockSOAP, '', this.yakurekiRecorder ? this.yakurekiRecorder.getElapsedTime() : 0,
-        patientName, nsipsRow
+        mockSOAP, '', duration, patientName, nsipsRow
       );
       if (result) {
         this.toast(`💾 ☁️ ${patientName ? patientName + 'さんの' : ''}テキストを登録しました`);
       } else {
         this.toast('💾 ローカルに保存しました（GAS未設定）');
       }
+
+      // 履歴（最近の記録）に登録して画面を更新
+      History.add({
+        summary: patientName ? `👤 ${patientName}様 (音声テキスト)` : '🗣 音声テキスト記録',
+        drugs: '',
+        patientName: patientName,
+        duration: duration,
+        soap: mockSOAP
+      });
+      this.renderHistory();
+
     } catch (err) {
       console.warn('[App] Cloud save failed:', err);
       this.toast('💾 ローカル保存済み（クラウド保存失敗）', 'error');
