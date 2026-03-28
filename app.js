@@ -786,6 +786,7 @@ const App = {
       document.getElementById('yakurekiStopIcon').classList.remove('hidden');
       document.getElementById('yakurekiRecordBtn').classList.add('recording');
       document.getElementById('yakurekiRecordLabel').textContent = 'タップして停止';
+      this.startYakurekiWaveformAnimation();
       this.toast('🎤 録音開始');
     } catch (err) {
       document.getElementById('yakurekiRecordBtn').style.opacity = '';
@@ -811,6 +812,7 @@ const App = {
     document.getElementById('yakurekiRecordBtn').classList.remove('recording');
     document.getElementById('yakurekiRecordLabel').textContent = 'タップして録音開始';
     document.getElementById('yakurekiRecordTime').textContent = '00:00';
+    this.stopYakurekiWaveformAnimation();
 
     const settings = Config.load();
     const useWhisper = settings.speechEngine === 'whisper';
@@ -1128,13 +1130,27 @@ ${transcript}`;
   initCanvas() {
     const canvas = document.getElementById('waveformCanvas');
     const container = canvas.parentElement;
-    canvas.width = container.clientWidth * window.devicePixelRatio;
-    canvas.height = container.clientHeight * window.devicePixelRatio;
-    canvas.style.width = container.clientWidth + 'px';
-    canvas.style.height = container.clientHeight + 'px';
-    const ctx = canvas.getContext('2d');
-    ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
-    this.drawIdleWaveform(ctx, container.clientWidth, container.clientHeight);
+    if (canvas && container) {
+      canvas.width = container.clientWidth * window.devicePixelRatio;
+      canvas.height = container.clientHeight * window.devicePixelRatio;
+      canvas.style.width = container.clientWidth + 'px';
+      canvas.style.height = container.clientHeight + 'px';
+      const ctx = canvas.getContext('2d');
+      ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
+      this.drawIdleWaveform(ctx, container.clientWidth, container.clientHeight);
+    }
+
+    const yCanvas = document.getElementById('yakurekiWaveformCanvas');
+    if (yCanvas) {
+      const yContainer = yCanvas.parentElement;
+      yCanvas.width = yContainer.clientWidth * window.devicePixelRatio;
+      yCanvas.height = yContainer.clientHeight * window.devicePixelRatio;
+      yCanvas.style.width = yContainer.clientWidth + 'px';
+      yCanvas.style.height = yContainer.clientHeight + 'px';
+      const yCtx = yCanvas.getContext('2d');
+      yCtx.scale(window.devicePixelRatio, window.devicePixelRatio);
+      this.drawIdleWaveform(yCtx, yContainer.clientWidth, yContainer.clientHeight);
+    }
   },
 
   drawIdleWaveform(ctx, width, height) {
@@ -1187,6 +1203,47 @@ ${transcript}`;
 
   stopWaveformAnimation() {
     if (this.waveformAnimId) { cancelAnimationFrame(this.waveformAnimId); this.waveformAnimId = null; }
+    this.initCanvas();
+  },
+
+  startYakurekiWaveformAnimation() {
+    const canvas = document.getElementById('yakurekiWaveformCanvas');
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    const width = canvas.clientWidth;
+    const height = canvas.clientHeight;
+
+    const draw = () => {
+      ctx.clearRect(0, 0, width, height);
+      const data = this.yakurekiRecorder.getWaveformData();
+      if (!data) { this.yakurekiWaveformAnimId = requestAnimationFrame(draw); return; }
+
+      ctx.strokeStyle = '#7c3aed';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      const sliceWidth = width / data.length;
+      let x = 0;
+      for (let i = 0; i < data.length; i++) {
+        const v = data[i] / 128.0;
+        const y = (v * height) / 2;
+        i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+        x += sliceWidth;
+      }
+      ctx.stroke();
+
+      const vol = this.yakurekiRecorder.getVolumeLevel();
+      if (vol > 0.05) {
+        ctx.strokeStyle = `rgba(124, 58, 237, ${Math.min(vol * 3, 0.6)})`;
+        ctx.lineWidth = 4;
+        ctx.stroke();
+      }
+      this.yakurekiWaveformAnimId = requestAnimationFrame(draw);
+    };
+    draw();
+  },
+
+  stopYakurekiWaveformAnimation() {
+    if (this.yakurekiWaveformAnimId) { cancelAnimationFrame(this.yakurekiWaveformAnimId); this.yakurekiWaveformAnimId = null; }
     this.initCanvas();
   },
 
