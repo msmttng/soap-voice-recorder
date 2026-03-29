@@ -1919,39 +1919,127 @@ ${transcript}`;
 
   renderHistory() {
     const list = document.getElementById('historyList');
+    const yList = document.getElementById('yakurekiHistoryList');
     const records = History.load();
     
     if (records.length === 0) {
-      list.innerHTML = '<p class="empty-state">まだ記録がありません</p>';
+      if (list) list.innerHTML = '<p class="empty-state">まだ記録がありません</p>';
+      if (yList) yList.innerHTML = '<p class="empty-state">まだ記録がありません</p>';
       return;
     }
 
-    list.innerHTML = records.slice(0, 10).map(record => {
-      const date = new Date(record.timestamp);
-      const timeStr = `${date.getMonth()+1}/${date.getDate()} ${date.getHours()}:${String(date.getMinutes()).padStart(2,'0')}`;
-      const durStr = record.duration ? `${Math.floor(record.duration/60)}:${String(record.duration%60).padStart(2,'0')}` : '';
-      return `
-        <div class="history-item" data-id="${record.id}">
-          <div class="history-item-info">
-            <h4>${record.summary || '記録'}</h4>
-            <p>${record.drugs ? '💊 ' + record.drugs.substring(0, 30) : ''} ${durStr ? '⏱ ' + durStr : ''}</p>
+    // ========== SOAPタブ側の履歴一覧 ==========
+    if (list) {
+      list.innerHTML = records.slice(0, 10).map(record => {
+        const date = new Date(record.timestamp);
+        const timeStr = `${date.getMonth()+1}/${date.getDate()} ${date.getHours()}:${String(date.getMinutes()).padStart(2,'0')}`;
+        const durStr = record.duration ? `${Math.floor(record.duration/60)}:${String(record.duration%60).padStart(2,'0')}` : '';
+        return `
+          <div class="history-item" data-id="${record.id}">
+            <div class="history-item-info">
+              <h4>${record.summary || '記録'}</h4>
+              <p>${record.drugs ? '💊 ' + record.drugs.substring(0, 30) : ''} ${durStr ? '⏱ ' + durStr : ''}</p>
+            </div>
+            <span class="history-item-time">${timeStr}</span>
           </div>
-          <span class="history-item-time">${timeStr}</span>
-        </div>
-      `;
-    }).join('');
+        `;
+      }).join('');
 
-    list.querySelectorAll('.history-item').forEach(item => {
-      item.addEventListener('click', () => {
-        const id = parseInt(item.dataset.id);
-        const record = records.find(r => r.id === id);
-        if (record?.soap) {
-          this.currentSOAP = record.soap;
-          this.showScreen('soapScreen');
-          this.displaySOAP(record.soap);
-        }
+      list.querySelectorAll('.history-item').forEach(item => {
+        item.addEventListener('click', () => {
+          const id = parseInt(item.dataset.id);
+          const record = records.find(r => r.id === id);
+          if (record?.soap) {
+            this.currentSOAP = record.soap;
+            this.showScreen('soapScreen');
+            this.displaySOAP(record.soap);
+          }
+        });
       });
-    });
+    }
+
+    // ========== 音声テキストタブ側の履歴一覧 ==========
+    if (yList) {
+      yList.innerHTML = records.slice(0, 10).map(record => {
+        const date = new Date(record.timestamp);
+        const timeStr = `${date.getMonth()+1}/${date.getDate()} ${date.getHours()}:${String(date.getMinutes()).padStart(2,'0')}`;
+        const summary = record.patientName ? `👤 ${record.patientName} 様` : (record.summary || '記録');
+        return `
+          <div class="history-item" data-id="${record.id}" style="display:flex; justify-content:space-between; align-items:center;">
+            <div class="history-item-info" style="flex:1;">
+              <h4 style="margin-bottom:4px;">${summary}</h4>
+              <p style="font-size:12px; color:var(--text-muted);">${timeStr}</p>
+            </div>
+            <button class="action-btn secondary-btn quick-copy-btn" data-id="${record.id}" style="padding:6px 12px; font-size:12px; margin:0; width:auto; flex-shrink:0;">
+              📋 コピー
+            </button>
+          </div>
+        `;
+      }).join('');
+
+      // クリックで履歴から内容を復元する
+      yList.querySelectorAll('.history-item').forEach(item => {
+        item.addEventListener('click', (e) => {
+          // コピーボタンがクリックされた時は展開処理をしない
+          if (e.target.closest('.quick-copy-btn')) return;
+
+          const id = parseInt(item.dataset.id);
+          const record = records.find(r => r.id === id);
+          if (record?.soap?.transcript) {
+            document.getElementById('yakurekiOutputArea').classList.remove('hidden');
+            document.getElementById('yakurekiOutput').textContent = record.soap.transcript;
+            
+            // 患者名があれば選択状態にする
+            if (record.patientName && this._patientMap) {
+               const p = Object.values(this._patientMap).find(x => x.name === record.patientName);
+               if (p) {
+                 this.yakurekiSelectedPatient = p;
+                 const ys = document.getElementById('yakurekiPatientSelect');
+                 if (ys) ys.value = p.row;
+               }
+            }
+            
+            setTimeout(() => document.getElementById('yakurekiOutputArea').scrollIntoView({ behavior: 'smooth' }), 100);
+          } else {
+             this.toast('⚠️ この履歴にはテキストがありません', 'error');
+          }
+        });
+      });
+
+      // 専用のクイックコピー処理
+      yList.querySelectorAll('.quick-copy-btn').forEach(btn => {
+        btn.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          const id = parseInt(btn.dataset.id);
+          const record = records.find(r => r.id === id);
+          let text = record?.soap?.transcript || '';
+          if (!text) {
+             this.toast('⚠️ コピーするテキストがありません', 'error');
+             return;
+          }
+          if (record.patientName) {
+            text = `【患者: ${record.patientName}】\n\n` + text;
+          }
+
+          try {
+            await navigator.clipboard.writeText(text);
+            this.toast('📋 クリップボードにコピーしました');
+            btn.textContent = '✅ コピー済';
+            setTimeout(() => btn.textContent = '📋 コピー', 2000);
+          } catch (err) {
+            const ta = document.createElement('textarea');
+            ta.value = text;
+            document.body.appendChild(ta);
+            ta.select();
+            document.execCommand('copy');
+            document.body.removeChild(ta);
+            this.toast('📋 コピーしました');
+            btn.textContent = '✅ コピー済';
+            setTimeout(() => btn.textContent = '📋 コピー', 2000);
+          }
+        });
+      });
+    }
   },
 
   toast(message, type = 'info') {

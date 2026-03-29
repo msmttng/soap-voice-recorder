@@ -53,21 +53,29 @@ class AudioRecorder {
 
   /**
    * 録音開始
+   * @param {string|null} deviceId - 特定のマイクを使用する場合のデバイスID
    */
-  async start() {
+  async start(deviceId = null) {
     try {
       // マイクAPIの事前チェック
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
         throw new Error('このブラウザはマイクAPIに対応していません。HTTPSでアクセスしているか確認してください。');
       }
 
+      // オーディオ設定
+      const audioConstraints = {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true
+      };
+      
+      if (deviceId) {
+        audioConstraints.deviceId = { exact: deviceId };
+      }
+
       // マイクアクセスを要求（10秒タイムアウト付き）
       const getUserMediaPromise = navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true
-        }
+        audio: audioConstraints
       });
 
       const timeoutPromise = new Promise((_, reject) =>
