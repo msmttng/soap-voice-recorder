@@ -354,6 +354,15 @@
           </div>
         </section>
 
+        <section class="card settings-card">
+          <h3>📘 カスタム医療辞書</h3>
+          <div class="setting-item">
+            <label for="customVocabulary">頻出する病名・医療用語（改行またはカンマ区切り）</label>
+            <textarea id="customVocabulary" rows="5" placeholder="例:&#10;掌蹠膿疱症&#10;尋常性乾癬&#10;一包化&#10;粉砕" style="width:100%; background:var(--bg-input); border:1px solid rgba(0,0,0,0.08); border-radius:10px; padding:10px; color:var(--text-primary); font-family:var(--font-main); font-size:14px; resize:vertical;"></textarea>
+            <p class="hint">ここに登録した単語は、常に文字起こしの「事前辞書」に登録され、自動的に認識精度が向上します。</p>
+          </div>
+        </section>
+
         <button id="saveSettingsBtn" class="action-btn primary-btn">
           💾 設定を保存
         </button>

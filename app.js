@@ -19,6 +19,7 @@ const Config = {
     geminiApiKey: '',
     openaiApiKey: '',
     gasUrl: '',
+    customVocabulary: '',
     aiProvider: 'gemini',
     speechEngine: 'whisper',
     micDeviceId: 'default'
@@ -836,8 +837,12 @@ const App = {
     const isCloudEngine = engine === 'whisper' || engine === 'gemini';
     let speechText = '';
 
-    // NSIPSデータから現在の患者の処方薬リストを事前辞書として取得
-    const drugInfo = this.selectedPatient ? this.selectedPatient.Rp : null;
+    // NSIPSデータから現在の患者の処方薬リストおよびカスタム辞書を取得
+    let drugInfo = this.selectedPatient ? this.selectedPatient.Rp : '';
+    if (settings.customVocabulary && settings.customVocabulary.trim() !== '') {
+      drugInfo = (drugInfo ? drugInfo + '\n\n' : '') + '【頻出する病名・医療用語（カスタム辞書）】:\n' + settings.customVocabulary;
+    }
+    drugInfo = drugInfo.trim() !== '' ? drugInfo : null;
 
     if (engine === 'whisper') {
         document.getElementById('yakurekiTranscriptText').innerHTML = '⏳ OpenAI Whisperで文字起こし中...<br><span style="font-size:12px; color:var(--text-muted)">（数秒〜10秒程度かかります）</span>';
@@ -1396,8 +1401,12 @@ ${transcript}`;
 
       let transcript = '';
 
-      // NSIPSデータから現在の患者の処方薬リストを文字起こし辞書として取得
-      const drugInfo = this.selectedPatient ? this.selectedPatient.Rp : null;
+      // NSIPSデータとカスタム辞書を統合して文字起こし辞書として取得
+      let drugInfo = this.selectedPatient ? this.selectedPatient.Rp : '';
+      if (settings.customVocabulary && settings.customVocabulary.trim() !== '') {
+        drugInfo = (drugInfo ? drugInfo + '\n\n' : '') + '【頻出する病名・医療用語（カスタム辞書）】:\n' + settings.customVocabulary;
+      }
+      drugInfo = drugInfo.trim() !== '' ? drugInfo : null;
 
       if (engine === 'whisper') {
         // Whisper APIへ送信
@@ -1876,6 +1885,9 @@ ${transcript}`;
     document.getElementById('geminiApiKey').value = settings.geminiApiKey || '';
     document.getElementById('openaiApiKey').value = settings.openaiApiKey || '';
     document.getElementById('gasUrl').value = settings.gasUrl || '';
+    if (document.getElementById('customVocabulary')) {
+      document.getElementById('customVocabulary').value = settings.customVocabulary || '';
+    }
     document.querySelectorAll('input[name="aiProvider"]').forEach(r => {
       r.checked = r.value === settings.aiProvider;
     });
@@ -1893,10 +1905,12 @@ ${transcript}`;
   },
 
   saveSettings() {
+    const cvEl = document.getElementById('customVocabulary');
     const settings = {
       geminiApiKey: document.getElementById('geminiApiKey').value.trim(),
       openaiApiKey: document.getElementById('openaiApiKey').value.trim(),
       gasUrl: document.getElementById('gasUrl').value.trim(),
+      customVocabulary: cvEl ? cvEl.value : '',
       aiProvider: document.querySelector('input[name="aiProvider"]:checked')?.value || 'gemini',
       speechEngine: document.querySelector('input[name="speechEngine"]:checked')?.value || 'whisper',
       micDeviceId: document.getElementById('micDeviceSelect')?.value || 'default'
