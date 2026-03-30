@@ -461,18 +461,25 @@ ${drugSection}
    * 音声→文字起こしのみ（トークン節約版）
    * SOAP生成は行わず、テキストのみ返却
    */
-  async transcribeAudio(audioBlob, mimeType) {
+  async transcribeAudio(audioBlob, mimeType, drugInfo = null) {
     const settings = Config.load();
     const apiKey = settings.geminiApiKey;
     if (!apiKey) throw new Error('APIキーが設定されていません');
 
     const audioBase64 = await AudioRecorder.blobToBase64(audioBlob);
 
+    // AIに事前ヒント（処方薬辞書）を与えて文字起こし精度を飛躍的に高める
+    let promptBase = '以下の音声を日本語で文字起こししてください。薬剤師と患者の会話です。文字起こしのみを出力し、他の情報は不要です。';
+    if (drugInfo) {
+      // 処方薬名や医療用語を指定することでGeminiの推論精度を劇的に向上させる
+      promptBase += '\n\n【重要】以下の処方薬に関する発言が含まれる可能性が高いため、以下の単語（医薬品名・医療用語）が正確に出力されるよう特に注意して文字起こしを補正してください。\n\n処方薬リスト:\n' + drugInfo;
+    }
+
     const requestBody = {
       contents: [{
         parts: [
           { inlineData: { mimeType: mimeType, data: audioBase64 } },
-          { text: '以下の音声を日本語で文字起こししてください。薬剤師と患者の会話です。文字起こしのみを出力し、他の情報は不要です。' }
+          { text: promptBase }
         ]
       }],
       generationConfig: {
@@ -503,7 +510,7 @@ ${drugSection}
 // OpenAI API クライアント (Whisper 連携)
 // ==============================================
 const OpenAIClient = {
-  async transcribeAudio(audioBlob, mimeType) {
+  async transcribeAudio(audioBlob, mimeType, drugInfo = null) {
     const settings = Config.load();
     const apiKey = settings.openaiApiKey;
     if (!apiKey) throw new Error('OpenAI APIキーが設定されていません。設定画面でAPIキーを入力してください。');
@@ -516,6 +523,13 @@ const OpenAIClient = {
     formData.append('file', audioFile);
     formData.append('model', 'whisper-1');
     formData.append('language', 'ja');
+    
+    // Whisper API用: 事前コンテキスト辞書 (prompt) として処方薬リストを渡す
+    let promptText = '医療用語や病名が含まれる薬剤師と患者の会話です。';
+    if (drugInfo) {
+      promptText += ' 特に以下の処方薬名が正確に認識されるようにしてください: ' + drugInfo.replace(/\n/g, ' ');
+    }
+    formData.append('prompt', promptText);
 
     const url = 'https://api.openai.com/v1/audio/transcriptions';
 
@@ -822,10 +836,13 @@ const App = {
     const isCloudEngine = engine === 'whisper' || engine === 'gemini';
     let speechText = '';
 
+    // NSIPSデータから現在の患者の処方薬リストを事前辞書として取得
+    const drugInfo = this.selectedPatient ? this.selectedPatient.Rp : null;
+
     if (engine === 'whisper') {
         document.getElementById('yakurekiTranscriptText').innerHTML = '⏳ OpenAI Whisperで文字起こし中...<br><span style="font-size:12px; color:var(--text-muted)">（数秒〜10秒程度かかります）</span>';
         try {
-          speechText = await OpenAIClient.transcribeAudio(recording.blob, recording.mimeType);
+          speechText = await OpenAIClient.transcribeAudio(recording.blob, recording.mimeType, drugInfo);
           document.getElementById('yakurekiTranscriptText').textContent = speechText;
         } catch (whisperErr) {
           console.error('[Yakureki] Whisper error:', whisperErr);
@@ -834,7 +851,7 @@ const App = {
     } else if (engine === 'gemini') {
         document.getElementById('yakurekiTranscriptText').innerHTML = '⏳ Gemini 2.0で文字起こし中...<br><span style="font-size:12px; color:var(--text-muted)">（数秒〜15秒程度かかります）</span>';
         try {
-          speechText = await GeminiClient.transcribeAudio(recording.blob, recording.mimeType);
+          speechText = await GeminiClient.transcribeAudio(recording.blob, recording.mimeType, drugInfo);
           document.getElementById('yakurekiTranscriptText').textContent = speechText;
         } catch (geminiErr) {
           console.error('[Yakureki] Gemini error:', geminiErr);
@@ -861,7 +878,7 @@ const App = {
 
       try {
         const transcribedText = await GeminiClient.transcribeAudio(
-          recording.blob, recording.mimeType
+          recording.blob, recording.mimeType, drugInfo
         );
         document.getElementById('yakurekiTranscriptText').textContent = transcribedText;
         this.toast(`✅ AI文字起こし完了（${transcribedText.length}文字）`);
@@ -1379,6 +1396,9 @@ ${transcript}`;
 
       let transcript = '';
 
+      // NSIPSデータから現在の患者の処方薬リストを文字起こし辞書として取得
+      const drugInfo = this.selectedPatient ? this.selectedPatient.Rp : null;
+
       if (engine === 'whisper') {
         // Whisper APIへ送信
         const liveArea = document.getElementById('liveTranscriptArea');
@@ -1387,7 +1407,7 @@ ${transcript}`;
         this.updateSpeechStatus('listening', 'Whisper解析中');
 
         try {
-          transcript = await OpenAIClient.transcribeAudio(recording.blob, recording.mimeType);
+          transcript = await OpenAIClient.transcribeAudio(recording.blob, recording.mimeType, drugInfo);
         } catch (whisperErr) {
           console.error('[App] Whisper error:', whisperErr);
           this.toast(`❌ Whisper文字起こし失敗: ${whisperErr.message}`, 'error');
@@ -1400,7 +1420,7 @@ ${transcript}`;
         this.updateSpeechStatus('listening', 'Gemini解析中');
 
         try {
-          transcript = await GeminiClient.transcribeAudio(recording.blob, recording.mimeType);
+          transcript = await GeminiClient.transcribeAudio(recording.blob, recording.mimeType, drugInfo);
         } catch (geminiErr) {
           console.error('[App] Gemini transcription error:', geminiErr);
           this.toast(`❌ Gemini文字起こし失敗: ${geminiErr.message}`, 'error');
