@@ -876,6 +876,17 @@ const App = {
       // ✅ Stage 1: API成功 → テキストでAI薬歴生成
       this.toast(`✅ 文字起こし完了（${transcript.length}文字）`);
       await this.yakurekiGenerateSummary(transcript);
+
+      // 履歴に自動追加
+      const patientName = this.yakurekiSelectedPatient ? this.yakurekiSelectedPatient.name : '';
+      History.add({
+        summary: patientName ? `👤 ${patientName}様 (音声テキスト)` : '🗣 音声テキスト記録',
+        drugs: '',
+        patientName: patientName,
+        duration: this.yakurekiRecorder ? this.yakurekiRecorder.getElapsedTime() : 0,
+        soap: { S: '', O: '', A: '', P: '', transcript: transcript, summary: '音声テキスト記録' }
+      });
+      this.renderHistory();
     } else if (recording && recording.blob && recording.blob.size > 0 && !isCloudEngine) {
       // ✅ Stage 2: (WebSpeech利用時のみのフォールバック) 音声をGeminiで文字起こし
       this.toast('🧠 音声をAIで文字起こし中...');
@@ -1690,6 +1701,10 @@ ${transcript}`;
       if (btn) {
         btn.textContent = '🔄 更新';
         btn.disabled = false;
+      }
+      if (yBtn) {
+        yBtn.textContent = '🔄 更新';
+        yBtn.disabled = false;
       }
     }
   },
