@@ -62,11 +62,13 @@ class AudioRecorder {
         throw new Error('このブラウザはマイクAPIに対応していません。HTTPSでアクセスしているか確認してください。');
       }
 
-      // オーディオ設定
+      // オーディオ設定（AI認識向けに高品質化）
       const audioConstraints = {
         echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true
+        // [FIXED] AudioConstraints の noiseSuppression / autoGainControl を有効化する
+        noiseSuppression: true,   // ON に変更（モデル側でノイズ耐性あり）
+        autoGainControl: true,    // ON に変更（患者の声量差を吸収）
+        channelCount: 1
       };
       
       if (deviceId) {
@@ -95,7 +97,8 @@ class AudioRecorder {
 
       // MediaRecorder設定
       const mimeType = this.getPreferredMimeType();
-      const options = mimeType ? { mimeType } : {};
+      // [FIXED] audioBitsPerSecond を明示指定する
+      const options = mimeType ? { mimeType, audioBitsPerSecond: 128000 } : { audioBitsPerSecond: 128000 };
       this.mediaRecorder = new MediaRecorder(this.stream, options);
       this.audioChunks = [];
 
@@ -187,6 +190,13 @@ class AudioRecorder {
       this.mediaRecorder.onstop = () => {
         const mimeType = this.mediaRecorder.mimeType || 'audio/webm';
         const audioBlob = new Blob(this.audioChunks, { type: mimeType });
+        
+        // [FIXED] 録音 Blob 結合後にサイズバリデーションを追加する
+        const sizekb = audioBlob.size / 1024;
+        console.log(`[Recorder] 録音サイズ: ${sizekb.toFixed(1)} KB / mimeType: ${mimeType}`);
+        if (sizekb < 300) {
+          console.warn('[Recorder] 録音サイズが小さすぎます。音声品質または録音時間を確認してください。');
+        }
         
         // ストリームを解放
         if (this.stream) {

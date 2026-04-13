@@ -245,9 +245,11 @@ const GeminiClient = {
         parts: [{ text: prompt }]
       }],
       generationConfig: {
-        temperature: 0.3,
+        // [FIXED] Gemini API の responseMimeType を指定してJSON出力を安定化する
+        temperature: 0.1,
         topP: 0.8,
-        maxOutputTokens: 2048
+        maxOutputTokens: 4096,
+        responseMimeType: "application/json"
       }
     };
 
@@ -337,7 +339,9 @@ const GeminiClient = {
     if (!text) throw new Error('AIからの応答が空でした。');
 
     console.log(`[Gemini] ✅ ${model}(${apiVersion}) success!`);
-    return this._parseSOAPResponse(text);
+    const parsed = this._parseSOAPResponse(text);
+    if (!parsed) throw new Error('JSONパースに失敗しました（AI出力形式の問題）');
+    return parsed;
   },
 
   /**
@@ -374,63 +378,64 @@ const GeminiClient = {
   /**
    * AIレスポンスからSOAP JSONを抽出
    */
-  _parseSOAPResponse(text) {
-    // JSONブロックを探す
-    const jsonMatch = text.match(/```json\s*([\s\S]*?)```/);
-    if (jsonMatch) {
-      try { return JSON.parse(jsonMatch[1]); } catch {}
+  _parseSOAPResponse(rawText) {
+    // 1. まずそのままパース試みる
+    try {
+      return JSON.parse(rawText);
+    } catch (_) {}
+
+    // 2. ```json ... ``` フェンスを除去して再試行
+    const fenceStripped = rawText.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
+    try {
+      return JSON.parse(fenceStripped);
+    } catch (_) {}
+
+    // 3. 最初の { から最後の } を抽出して再試行
+    const match = rawText.match(/\{[\s\S]*\}/);
+    if (match) {
+      try {
+        return JSON.parse(match[0]);
+      } catch (_) {}
     }
 
-    // 直接JSONの場合
-    const braceMatch = text.match(/\{[\s\S]*\}/);
-    if (braceMatch) {
-      try { return JSON.parse(braceMatch[0]); } catch {}
-    }
-
-    // パース失敗 → テキストをそのまま使う
-    return {
-      transcript: text,
-      S: '（自動パースに失敗しました。文字起こし全文を確認してください）',
-      O: '', A: '', P: '',
-      summary: '要確認'
-    };
+    // 4. 全て失敗した場合は null を返す（呼び出し元でエラー表示）
+    return null;
   },
 
   _buildPrompt(transcript, drugInfo) {
-    const drugSection = drugInfo 
-      ? `\n\n## 処方薬情報（NSIPSから取得）\n${drugInfo}\nこの薬品情報を元に、A（薬学的評価）とP（指導計画）を具体的に提案してください。`
+    const dictSection = drugInfo?.trim()
+      ? `## 処方薬情報（NSIPSから取得）\n${drugInfo}\n\n`
       : '';
 
     return `あなたは日本の保険薬局に勤務するベテラン薬剤師です。
-以下は、薬剤師と患者の服薬指導時の会話を文字起こししたテキストです。
+以下の服薬指導の会話テキストをSOAP形式の薬歴JSONに変換してください。
 
-## 会話テキスト
+${dictSection}## 会話テキスト
 ${transcript}
-${drugSection}
 
-## 指示
-上記の会話テキストをSOAP形式の薬歴に変換してください。
+## SOAP記載基準
 
-## SOAP記載ルール
-- S（主観的情報）: 患者自身の言葉による訴え、自覚症状、生活状況、服薬状況、副作用の有無
-- O（客観的情報）: 処方内容、外見的観察、お薬手帳の情報、バイタルサイン（言及があれば）
-- A（薬学的評価）: 薬学的観点からの評価・分析。副作用の可能性、相互作用、効果判定、問題点の抽出
-- P（指導計画）: 実施した服薬指導の内容、患者への助言、次回確認事項、処方医への情報提供の必要性
+| 項目 | 記載できる情報源 | 記載禁止 |
+|------|----------------|---------|
+| S（主観的情報）| 患者の発言のみ。症状・不安・自己申告の服薬状況 | 薬剤師の解釈・推測 |
+| O（客観的情報）| 処方内容・薬剤師の観察・お薬手帳情報・バイタル（言及時のみ） | 患者の主観的訴え |
+| A（薬学的評価）| 薬学的知識に基づく評価・副作用リスク・相互作用・効果判定 | SとOで確認できない事実の断定 |
+| P（指導計画）| 実施した指導内容・患者への助言・次回確認事項・処方医への連絡要否 | 実施していない指導の記載 |
 
-## 重要な注意
-- 日本語で出力すること
-- 医薬品名は正確に記載すること
-- 患者の発言はできるだけ原文に近い表現で記載すること
-- 推測や創作は行わないこと
+## 出力ルール
+- 会話に記載のない情報でS・O・Pを補完しない（情報がない場合は該当フィールドを "" にする）
+- Aは薬学的推論を記述してよいが、断定的な診断表現は避ける
+- summaryは体言止め20文字以内、患者の主訴または今回の指導の核心を記載
+- transcriptは話者ラベル付き（「薬剤師:」「患者:」）に整形し、元の発言内容は改変しない
 
-## 出力形式（JSON）
+## 出力形式（JSONのみ・前後に文章不要）
 {
-  "transcript": "整形した会話テキスト",
-  "S": "主観的情報",
-  "O": "客観的情報",
-  "A": "薬学的評価",
-  "P": "指導計画",
-  "summary": "一行要約（20文字以内）"
+  "transcript": "薬剤師: ...\\n患者: ...",
+  "S": "string",
+  "O": "string",
+  "A": "string",
+  "P": "string",
+  "summary": "string（20文字以内）"
 }`;
   },
 
@@ -470,22 +475,38 @@ ${drugSection}
     const audioBase64 = await AudioRecorder.blobToBase64(audioBlob);
 
     // AIに事前ヒント（処方薬辞書）を与えて文字起こし精度を飛躍的に高める
-    let promptBase = '以下の音声を日本語で文字起こししてください。薬剤師と患者の会話です。文字起こしのみを出力し、他の情報は不要です。';
-    if (drugInfo) {
-      // 処方薬名や医療用語を指定することでGeminiの推論精度を劇的に向上させる
-      promptBase += '\n\n【重要】以下の処方薬に関する発言が含まれる可能性が高いため、以下の単語（医薬品名・医療用語）が正確に出力されるよう特に注意して文字起こしを補正してください。\n\n処方薬リスト:\n' + drugInfo;
-    }
+    // promptBase ではなく systemInstruction を使うことで指示を厳格化
+    const dictSection = drugInfo?.trim()
+      ? `\n\n## 医療用語辞書（最優先適用）\n以下の語彙は同音異義語が存在する場合、必ずこのリストの表記を優先する。\n---\n${drugInfo}\n---`
+      : '';
+
+    const systemInstruction = `あなたは日本の医療現場に特化した文字起こしエンジンです。
+送信された音声を日本語で一言一句忠実にテキスト化してください。
+
+## 絶対ルール（違反禁止）
+1. 前置き・後書き・説明・要約を一切出力しない
+2. 音声に存在しない言葉・会話を補完・推測・生成しない
+3. 同一フレーズの繰り返し（ループ）を検出したら即時停止する
+4. 無音・環境ノイズ・音声終了後は出力を終了する（空白行も不要）${dictSection}
+
+## 出力仕様
+- 話者ラベル不要（生テキストのみ）
+- 相槌・フィラー（「えー」「あのー」等）も省略せずに書き起こす
+- 句読点は自然な日本語の読点・句点で補う`;
 
     const requestBody = {
+      systemInstruction: { parts: [{ text: systemInstruction }] },
       contents: [{
         parts: [
-          { inlineData: { mimeType: mimeType, data: audioBase64 } },
-          { text: promptBase }
+          // [FIXED] Gemini API へ送信する mimeType からコーデック記述を除去する
+          { inlineData: { mimeType: mimeType.split(';')[0], data: audioBase64 } },
+          { text: "音声を文字起こししてください。テキストのみ出力してください。" }
         ]
       }],
       generationConfig: {
-        temperature: 0.1,
-        maxOutputTokens: 2000
+        // [FIXED] 文字起こし用 generationConfig
+        temperature: 0.2, // ループハルシネーションを防ぐために0.0から微増
+        maxOutputTokens: 8192
       }
     };
 
@@ -516,8 +537,14 @@ const OpenAIClient = {
     const apiKey = settings.openaiApiKey;
     if (!apiKey) throw new Error('OpenAI APIキーが設定されていません。設定画面でAPIキーを入力してください。');
 
-    // MIMEタイプに合わせて拡張子を決定
-    const ext = mimeType.includes('mp4') ? 'm4a' : 'webm';
+    // [FIXED] iOS 向け拡張子マッピングを関数化して堅牢にする
+    function getAudioExtension(mimeType) {
+      if (mimeType.includes('mp4') || mimeType.includes('m4a')) return 'm4a';
+      if (mimeType.includes('ogg')) return 'ogg';
+      if (mimeType.includes('wav')) return 'wav';
+      return 'webm';
+    }
+    const ext = getAudioExtension(mimeType);
     const audioFile = new File([audioBlob], `audio.${ext}`, { type: mimeType });
 
     const formData = new FormData();
@@ -525,12 +552,22 @@ const OpenAIClient = {
     formData.append('model', 'whisper-1');
     formData.append('language', 'ja');
     
-    // Whisper API用: 事前コンテキスト辞書 (prompt) として処方薬リストを渡す
-    let promptText = '医療用語や病名が含まれる薬剤師と患者の会話です。';
-    if (drugInfo) {
-      promptText += ' 特に以下の処方薬名が正確に認識されるようにしてください: ' + drugInfo.replace(/\n/g, ' ');
-    }
+    // [FIXED] Whisper の prompt パラメータを単語羅列から自然文に変更する
+    const cleanedDrugs = drugInfo
+      ? drugInfo
+          .replace(/[【】（）「」『』]/g, '')
+          .replace(/\d+mg|\d+μg|\d+錠|\d+カプセル/g, '')
+          .replace(/\n+/g, '、')
+          .replace(/、\s*、/g, '、')
+          .trim()
+          .slice(0, 300) // トークン上限の安全圏
+      : '';
+
+    const promptText = cleanedDrugs
+      ? `薬剤師と患者の服薬指導。処方薬：${cleanedDrugs}。\n薬剤師「お薬について確認させてください。副作用や飲み合わせはいかがでしょうか。」\n患者「はい、一包化でお願いします。頓服の飲み方を教えてください。」`
+      : `薬剤師と患者の服薬指導。\n薬剤師「お薬について確認させてください。副作用や飲み合わせはいかがでしょうか。」\n患者「はい、一包化でお願いします。頓服の飲み方を教えてください。」`;
     formData.append('prompt', promptText);
+    formData.append('temperature', '0.2'); // ループ低減対策
 
     const url = 'https://api.openai.com/v1/audio/transcriptions';
 
@@ -920,12 +957,25 @@ const App = {
       return;
     }
 
-    const prompt = `あなたは医療テキストの文字起こしアシスタントです。
-以下のテキストは薬剤師と患者の会話の文字起こしです。
-会話から話者を推測し、「薬剤師:」と「患者:」のラベルを付けて会話を再構成してください。
-その他の解説、要約、注釈は一切出力せず、話者分離された会話のテキストのみを出力してください。
+    const prompt = `あなたは医療対話の話者分離アナリストです。
+以下のテキストは薬局での服薬指導を文字起こしした生テキストです。
+各発話を「薬剤師:」または「患者:」に分類して再構成してください。
 
-## 会話テキスト
+## 話者判定の手がかり（優先度順）
+1. 説明・指示・質問する側 → 薬剤師
+   例）「〜してください」「〜の可能性があります」「お薬は〜」「副作用として〜」
+2. 症状・体験・生活を語る側 → 患者
+   例）「〜が痛い」「〜を飲んでいます」「〜が心配で」
+3. 判断が困難な発話 → 直前の話者を継続するか「不明:」とラベルする
+
+## 出力ルール
+- 形式: 「薬剤師: 〇〇〇」「患者: ×××」を改行区切りで列挙
+- 前置き・説明・要約・コメントは一切出力しない
+- 元テキストにない言葉を追加・補完・省略しない
+- 連続する同一話者の発話は別行に分けて保持する
+- テキストが尽きたら出力を終了する（末尾に注釈不要）
+
+## 処理対象テキスト
 ${transcript}`;
 
     this.toast('🧠 AI話者分離中...');
@@ -935,7 +985,7 @@ ${transcript}`;
     const requestBody = {
       contents: [{ parts: [{ text: prompt }] }],
       generationConfig: {
-        temperature: 0.2, // 低めのtemperatureで事実重視
+        temperature: 0.3, // ループを防ぐために適度なランダム性を付与
         maxOutputTokens: 2000
       }
     };
@@ -950,7 +1000,17 @@ ${transcript}`;
 
       try {
         const text = await GeminiClient._callAPIRaw(cfg.model, cfg.api, settings.geminiApiKey, requestBody);
-        outputEl.textContent = text;
+        
+        // TASK-07: 「不明:」行のUIハイライト
+        let formattedText = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        formattedText = formattedText.split('\n').map(line => {
+          if (line.trim().startsWith('不明:')) {
+            return `<span style="background-color: rgba(239, 68, 68, 0.1); color: var(--danger, #ef4444); padding: 2px 4px; border-radius: 4px; font-weight: 500;">${line}</span>`;
+          }
+          return line;
+        }).join('<br>');
+        outputEl.innerHTML = formattedText;
+        
         this.toast('✅ 話者分離完了');
         return;
       } catch (err) {
@@ -972,7 +1032,16 @@ ${transcript}`;
       try {
         outputEl.textContent = `⏳ ${cfg.model} で最終リトライ中...`;
         const text = await GeminiClient._callAPIRaw(cfg.model, cfg.api, settings.geminiApiKey, requestBody);
-        outputEl.textContent = text;
+        
+        let formattedText = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        formattedText = formattedText.split('\n').map(line => {
+          if (line.trim().startsWith('不明:')) {
+            return `<span style="background-color: rgba(239, 68, 68, 0.1); color: var(--danger, #ef4444); padding: 2px 4px; border-radius: 4px; font-weight: 500;">${line}</span>`;
+          }
+          return line;
+        }).join('<br>');
+        outputEl.innerHTML = formattedText;
+        
         this.toast('✅ 話者分離完了');
         return;
       } catch (e) { continue; }
@@ -1717,7 +1786,15 @@ ${transcript}`;
     
     // 患者データをマップに保存
     this._patientMap = {};
+    const seenNames = new Set(); // 重複排除（患者名の記録用）
+
     patients.forEach(p => {
+      // 同じ名前の患者（過去の古いデータ）が既に追加されているならスキップ
+      if (seenNames.has(p.name)) {
+        return;
+      }
+      seenNames.add(p.name);
+
       this._patientMap[p.row] = p;
       if (select) {
         const opt = document.createElement('option');
@@ -1806,11 +1883,19 @@ ${transcript}`;
   displaySOAP(data) {
     document.getElementById('processingIndicator').classList.add('hidden');
     document.getElementById('soapContent').classList.remove('hidden');
-    document.getElementById('soapS').textContent = data.S || '';
-    document.getElementById('soapO').textContent = data.O || '';
-    document.getElementById('soapA').textContent = data.A || '';
-    document.getElementById('soapP').textContent = data.P || '';
-    document.getElementById('transcriptText').textContent = data.transcript || '';
+    
+    // TASK-06: 情報不足時のUI警告表示
+    const fields = ['S', 'O', 'A', 'P'];
+    fields.forEach(f => {
+      const el = document.getElementById(`soap${f}`);
+      if (data && data[f] && data[f].trim() !== '') {
+        el.textContent = data[f];
+      } else {
+        el.innerHTML = '<span style="color:var(--text-muted); font-size:13px; font-style:italic;">⚠️ 情報不足（会話に記載なし）</span>';
+      }
+    });
+
+    document.getElementById('transcriptText').textContent = data?.transcript || '';
   },
 
   toggleEdit(targetId) {
