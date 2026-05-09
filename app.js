@@ -1701,15 +1701,31 @@ ${transcript}`;
       document.getElementById('recordLabel').textContent = 'タップして停止 & SOAP生成';
       document.getElementById('pauseBtn').classList.remove('hidden');
       
-      // リアルタイム表示エリアを表示
-      document.getElementById('liveTranscriptArea').classList.remove('hidden');
-      
+      // リアルタイム表示エリアをリセット＆表示
+      // ※ 前回のフォールバックUIが innerHTML を上書きしていた場合に備えて
+      //   liveTranscriptText を含む初期構造を毎回再生成する
+      const liveArea = document.getElementById('liveTranscriptArea');
+      liveArea.innerHTML = `
+        <div class="card-header">
+          <span class="card-icon">📝</span>
+          <h2>リアルタイム文字起こし</h2>
+          <span id="speechStatus" style="font-size:11px; margin-left:auto; cursor:help;">🟢 認識中</span>
+        </div>
+        <div id="liveTranscriptText" style="font-size:14px; line-height:1.7; color:var(--text-primary); max-height:150px; overflow-y:auto; white-space:pre-wrap;">
+          🎤 音声を認識中...
+        </div>
+      `;
+      liveArea.classList.remove('hidden');
+
       if (engine === 'whisper') {
         document.getElementById('liveTranscriptText').innerHTML = '🎙 録音中...<br><span style="font-size:12px; color:var(--text-muted)">（終了後にWhisper高精度エンジンで一括文字起こしを実行します）</span>';
         this.updateSpeechStatus('listening', 'Whisper録音中');
       } else if (engine === 'gemini') {
         document.getElementById('liveTranscriptText').innerHTML = '🎙 録音中...<br><span style="font-size:12px; color:var(--text-muted)">（終了後にGemini高精度エンジンで一括文字起こしを実行します）</span>';
         this.updateSpeechStatus('listening', 'Gemini録音中');
+      } else if (engine === 'amivoice') {
+        document.getElementById('liveTranscriptText').innerHTML = '🏥 録音中...<br><span style="font-size:12px; color:var(--text-muted)">（AmiVoice医療エンジンでリアルタイム認識中）</span>';
+        this.updateSpeechStatus('listening', 'AmiVoice認識中');
       } else {
         document.getElementById('liveTranscriptText').textContent = '🎤 音声を認識中...';
         this.updateSpeechStatus('listening', '音声認識中');
