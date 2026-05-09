@@ -604,6 +604,7 @@ const OpenAIClient = {
 
 // ==============================================
 // AmiVoice Cloud API クライアント（WebSocket リアルタイム）
+// ACP v4 WebSocket プロトコル準拠
 // ==============================================
 const AmiVoiceClient = {
   ws: null,
@@ -612,14 +613,18 @@ const AmiVoiceClient = {
   onUpdate: null,
   onStatusChange: null,
   _audioContext: null,
-  _workletNode: null,
+  _processor: null,
+  _source: null,
   _mediaStream: null,
+  _audioReady: false,   // 'S' 応答受信後に true
 
   /**
    * AmiVoice WebSocket接続を開いてリアルタイム認識を開始
-   * @param {function} onUpdate    (fullText, interimText) => void
-   * @param {function} onStatus    (status, detail) => void
-   * @param {string|null} deviceId マイクデバイスID
+   * プロトコル:
+   *   1. WS接続
+   *   2. onopen → テキスト "s -a-medworker" 送信
+   *   3. サーバから "S" 受信 → 音声バイナリ送信開始
+   *   4. 停止時 → テキスト "e" 送信
    */
   async start(onUpdate, onStatusChange, deviceId = null) {
     const settings = Config.load();
@@ -630,70 +635,90 @@ const AmiVoiceClient = {
     this.onUpdate = onUpdate;
     this.onStatusChange = onStatusChange;
     this.isListening = true;
+    this._audioReady = false;
 
     // マイクストリーム取得
     const constraints = { audio: deviceId ? { deviceId: { exact: deviceId } } : true };
     this._mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
 
-    // AudioContext / AudioWorklet でPCM16をキャプチャ
+    // AudioContext（16kHz モノラル PCM16）
     this._audioContext = new AudioContext({ sampleRate: 16000 });
     const source = this._audioContext.createMediaStreamSource(this._mediaStream);
+    const processor = this._audioContext.createScriptProcessor(4096, 1, 1);
 
-    // ScriptProcessorNode（AudioWorkletが使えない環境向けフォールバック）
-    const bufferSize = 4096;
-    const processor = this._audioContext.createScriptProcessor(bufferSize, 1, 1);
+    processor.onaudioprocess = (e) => {
+      if (!this._audioReady || !this.isListening) return;
+      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+      const float32 = e.inputBuffer.getChannelData(0);
+      // Float32 → Int16 PCM
+      const int16 = new Int16Array(float32.length);
+      for (let i = 0; i < float32.length; i++) {
+        int16[i] = Math.max(-32768, Math.min(32767, float32[i] * 32768));
+      }
+      this.ws.send(int16.buffer);
+    };
 
-    // WebSocket接続（医療エンジン: a-medical, ログなし）
-    const wsUrl = `wss://acp-api.amivoice.com/v1/nict-asr?u=${encodeURIComponent(appKey)}&a=-a-medical-input`;
+    // スピーカーには繋がない（ハウリング防止）
+    source.connect(processor);
+    // processor は destination に繋がず、onaudioprocess だけ使用
+    // ※ Chrome では destination 未接続でも onaudioprocess は発火する
+
+    this._processor = processor;
+    this._source = source;
+
+    // WebSocket接続
+    // エンジン: -a-medworker（医療従事者向け高精度エンジン）
+    const wsUrl = `wss://acp-api.amivoice.com/v1/nict-asr?u=${encodeURIComponent(appKey)}&a=-a-medworker`;
     this.ws = new WebSocket(wsUrl);
     this.ws.binaryType = 'arraybuffer';
 
     this.ws.onopen = () => {
-      console.log('[AmiVoice] WebSocket connected');
-      this._emitStatus('listening', 'AmiVoice 認識中');
-
-      // 接続確立後に音声データの流し込み開始
-      source.connect(processor);
-      processor.connect(this._audioContext.destination);
-
-      processor.onaudioprocess = (e) => {
-        if (!this.isListening || !this.ws || this.ws.readyState !== WebSocket.OPEN) return;
-        const float32 = e.inputBuffer.getChannelData(0);
-        // Float32 → Int16 PCM変換
-        const int16 = new Int16Array(float32.length);
-        for (let i = 0; i < float32.length; i++) {
-          int16[i] = Math.max(-32768, Math.min(32767, float32[i] * 32768));
-        }
-        // AmiVoice プロトコル: 音声データは 'p' + バイナリ
-        const header = new Uint8Array([0x70]); // 'p'
-        const combined = new Uint8Array(header.byteLength + int16.buffer.byteLength);
-        combined.set(header, 0);
-        combined.set(new Uint8Array(int16.buffer), header.byteLength);
-        this.ws.send(combined.buffer);
-      };
-
-      this._processor = processor;
-      this._source = source;
+      console.log('[AmiVoice] WebSocket connected → sending start command');
+      // プロトコル: 接続後にテキストで "s <grammar>" コマンドを送る
+      this.ws.send('s -a-medworker');
+      this._emitStatus('listening', 'AmiVoice 接続中...');
     };
 
     this.ws.onmessage = (event) => {
-      try {
-        const msg = JSON.parse(event.data);
-        // text: 確定, results: 途中結果
-        if (msg.type === 'RESULT') {
-          if (msg.text !== undefined) {
-            this.fullTranscript += msg.text;
-            console.log('[AmiVoice] Final:', msg.text);
+      if (typeof event.data !== 'string') return;
+      const data = event.data.trim();
+      console.log('[AmiVoice] recv:', data.substring(0, 120));
+
+      // "S" → スタート確認、音声送信を許可
+      if (data === 'S') {
+        this._audioReady = true;
+        this._emitStatus('listening', 'AmiVoice 認識中');
+        console.log('[AmiVoice] ✅ Start confirmed — streaming audio');
+        return;
+      }
+
+      // "RESULT {...}" 形式のメッセージ
+      const spaceIdx = data.indexOf(' ');
+      if (spaceIdx < 0) return;
+      const msgType = data.substring(0, spaceIdx);
+      const body    = data.substring(spaceIdx + 1);
+
+      if (msgType === 'RESULT') {
+        try {
+          const result = JSON.parse(body);
+          const text = result.text || '';
+          const isFinal = result.type !== 'INTERIM';
+
+          if (isFinal && text) {
+            this.fullTranscript += text;
+            console.log('[AmiVoice] Final:', text);
           }
-          const interim = msg.results?.[0]?.text || '';
+          const interim = !isFinal ? text : '';
           if (this.onUpdate) this.onUpdate(this.fullTranscript, interim);
-        } else if (msg.type === 'HEARTBEAT') {
-          // 無視
-        } else {
-          console.log('[AmiVoice] msg:', msg);
+        } catch (e) {
+          console.warn('[AmiVoice] JSON parse error:', e, body.substring(0, 80));
         }
-      } catch (e) {
-        console.warn('[AmiVoice] Parse error:', e, event.data);
+      } else if (msgType === 'A') {
+        // 認証エラーなど
+        console.warn('[AmiVoice] Auth/Error response:', body);
+        this._emitStatus('error', `AmiVoice認証エラー: ${body}`);
+      } else {
+        console.log('[AmiVoice] other msg:', data.substring(0, 80));
       }
     };
 
@@ -704,8 +729,9 @@ const AmiVoiceClient = {
 
     this.ws.onclose = (e) => {
       console.log('[AmiVoice] WebSocket closed:', e.code, e.reason);
+      this._audioReady = false;
       if (this.isListening) {
-        this._emitStatus('stopped', 'AmiVoice接続が切れました');
+        this._emitStatus('stopped', `AmiVoice接続が切れました (code:${e.code})`);
       }
     };
   },
@@ -715,6 +741,7 @@ const AmiVoiceClient = {
    */
   stop() {
     this.isListening = false;
+    this._audioReady = false;
 
     // 音声パイプライン解体
     if (this._processor) { try { this._processor.disconnect(); } catch(e) {} this._processor = null; }
@@ -725,15 +752,15 @@ const AmiVoiceClient = {
       this._mediaStream = null;
     }
 
-    // WebSocket終了通知（'e' コマンド）
+    // WebSocket終了通知（"e" テキストコマンド）
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      try { this.ws.send(new Uint8Array([0x65]).buffer); } catch(e) {} // 'e' = end
-      setTimeout(() => { try { this.ws.close(); } catch(e) {} }, 500);
+      try { this.ws.send('e'); } catch(e) {}
+      setTimeout(() => { try { this.ws.close(); } catch(e) {} }, 800);
     }
     this.ws = null;
 
     this._emitStatus('stopped', 'AmiVoice 停止');
-    console.log('[AmiVoice] Stopped, transcript:', this.fullTranscript.length, 'chars');
+    console.log('[AmiVoice] Stopped. transcript:', this.fullTranscript.length, 'chars');
     return this.fullTranscript;
   },
 
@@ -747,6 +774,7 @@ const AmiVoiceClient = {
     }
   }
 };
+
 
 // ==============================================
 // GAS バックエンドクライアント
