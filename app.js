@@ -1095,7 +1095,7 @@ const App = {
     let speechText = '';
 
     // NSIPSデータから現在の患者の処方薬リストおよびカスタム辞書を取得
-    let drugInfo = this.selectedPatient ? this.selectedPatient.Rp : '';
+    let drugInfo = this.selectedPatient ? (this.selectedPatient.Rp || this.selectedPatient.drug_summary || '') : '';
     if (settings.customVocabulary && settings.customVocabulary.trim() !== '') {
       drugInfo = (drugInfo ? drugInfo + '\n\n' : '') + '【頻出する病名・医療用語（カスタム辞書）】:\n' + settings.customVocabulary;
     }
@@ -1767,7 +1767,7 @@ ${transcript}`;
       let transcript = '';
 
       // NSIPSデータとカスタム辞書を統合して文字起こし辞書として取得
-      let drugInfo = this.selectedPatient ? this.selectedPatient.Rp : '';
+      let drugInfo = this.selectedPatient ? (this.selectedPatient.Rp || this.selectedPatient.drug_summary || '') : '';
       if (settings.customVocabulary && settings.customVocabulary.trim() !== '') {
         drugInfo = (drugInfo ? drugInfo + '\n\n' : '') + '【頻出する病名・医療用語（カスタム辞書）】:\n' + settings.customVocabulary;
       }
