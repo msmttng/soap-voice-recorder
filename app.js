@@ -2014,10 +2014,14 @@ ${transcript}`;
     const settings = Config.load();
     const pArea = document.getElementById('patientSelectArea');
     const yArea = document.getElementById('yakurekiPatientSelectArea');
-    
+
     if (!settings.gasUrl) {
-      if (pArea) pArea.classList.add('hidden');
-      if (yArea) yArea.classList.add('hidden');
+      // GAS URL未設定時はプレースホルダーを表示して返る（非表示にはしない）
+      const select = document.getElementById('patientSelect');
+      const ySelect = document.getElementById('yakurekiPatientSelect');
+      if (select) select.innerHTML = '<option value="">— GAS URLが未設定です（設定画面で登録）</option>';
+      if (ySelect) ySelect.innerHTML = '<option value="">— GAS URLが未設定です（設定画面で登録）</option>';
+      // 項目は常に表示保つ（hidden 属性は操作しない）
       return;
     }
 
@@ -2031,7 +2035,8 @@ ${transcript}`;
       const response = await fetch(`${settings.gasUrl}?action=patients&t=${Date.now()}`);
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const data = await response.json();
-      
+
+      // 成功時は必ず表示（hidden を外す）
       if (pArea) pArea.classList.remove('hidden');
       if (yArea) yArea.classList.remove('hidden');
 
@@ -2050,6 +2055,11 @@ ${transcript}`;
       }
     } catch (err) {
       console.warn('[App] Patient list fetch failed:', err);
+      // エラー時も hidden にはしない（表示を維持しプレースホルダーだけ変更）
+      const select = document.getElementById('patientSelect');
+      if (select && select.options.length <= 1) {
+        select.innerHTML = '<option value="">⚠️ 取得失敗（更新ボタンで再試行）</option>';
+      }
       this.toast('❌ リストの更新に失敗しました', 'error');
     } finally {
       if (btn) {
