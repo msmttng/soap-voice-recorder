@@ -1091,11 +1091,11 @@ const App = {
 
     const settings = Config.load();
     const engine = settings.speechEngine || 'whisper';
-    const isCloudEngine = engine === 'whisper' || engine === 'gemini';
+    const isCloudEngine = engine === 'whisper' || engine === 'gemini' || engine === 'amivoice';
     let speechText = '';
 
     // NSIPSデータから現在の患者の処方薬リストおよびカスタム辞書を取得
-    let drugInfo = this.selectedPatient ? (this.selectedPatient.Rp || this.selectedPatient.drug_summary || '') : '';
+    let drugInfo = this.yakurekiSelectedPatient ? (this.yakurekiSelectedPatient.Rp || this.yakurekiSelectedPatient.drug_summary || '') : '';
     if (settings.customVocabulary && settings.customVocabulary.trim() !== '') {
       drugInfo = (drugInfo ? drugInfo + '\n\n' : '') + '【頻出する病名・医療用語（カスタム辞書）】:\n' + settings.customVocabulary;
     }
@@ -1119,6 +1119,12 @@ const App = {
           console.error('[Yakureki] Gemini error:', geminiErr);
           document.getElementById('yakurekiTranscriptText').textContent = `❌ Gemini文字起こし失敗: ${geminiErr.message}`;
         }
+    } else if (engine === 'amivoice') {
+      // 🏥 AmiVoice WebSocket 停止して結果取得
+      document.getElementById('yakurekiTranscriptText').innerHTML =
+        '⏳ AmiVoice 認識結果を取得中...';
+      speechText = AmiVoiceClient.stop();
+      document.getElementById('yakurekiTranscriptText').textContent = speechText || '(認識結果なし)';
     } else {
       // Speech API 停止
       try {
@@ -1691,6 +1697,19 @@ ${transcript}`;
           }
         };
         document.addEventListener('visibilitychange', this._visibilityRecovery);
+      } else if (engine === 'amivoice') {
+        // 🏥 AmiVoice WebSocket リアルタイム認識を開始
+        try {
+          await AmiVoiceClient.start(
+            (final, interim) => this.updateLiveTranscript(final, interim),
+            (status, detail) => this.updateSpeechStatus(status, detail),
+            deviceId
+          );
+        } catch (amiErr) {
+          console.error('[App] AmiVoice start error:', amiErr);
+          this.toast(`❌ AmiVoice起動失敗: ${amiErr.message}`, 'error');
+          // マイク録音は継続（録音Blobは残る）
+        }
       }
       
       // UI更新
@@ -1814,6 +1833,18 @@ ${transcript}`;
         } catch (geminiErr) {
           console.error('[App] Gemini transcription error:', geminiErr);
           this.toast(`❌ Gemini文字起こし失敗: ${geminiErr.message}`, 'error');
+        }
+      } else if (engine === 'amivoice') {
+        // 🏥 AmiVoice WebSocket を停止して最終テキストを取得
+        document.getElementById('liveTranscriptText').innerHTML =
+          '⏳ AmiVoice 認識結果を取得中...';
+        transcript = AmiVoiceClient.stop();
+        console.log(`[App] AmiVoice transcript: ${transcript.length} chars`);
+
+        // visibilitychange リスナー解除
+        if (this._visibilityRecovery) {
+          document.removeEventListener('visibilitychange', this._visibilityRecovery);
+          this._visibilityRecovery = null;
         }
       } else {
         // Web Speech APIの結果取得を試みる
