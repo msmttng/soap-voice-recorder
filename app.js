@@ -18,6 +18,7 @@ const Config = {
   defaults: {
     geminiApiKey: '',
     openaiApiKey: '',
+    amivoiceApiKey: '',
     gasUrl: '',
     customVocabulary: '',
     aiProvider: 'gemini',
@@ -591,6 +592,152 @@ const OpenAIClient = {
     const data = await response.json();
     console.log('[OpenAI] Whisper transcription successful');
     return data.text;
+  }
+};
+
+// ==============================================
+// AmiVoice Cloud API クライアント（WebSocket リアルタイム）
+// ==============================================
+const AmiVoiceClient = {
+  ws: null,
+  isListening: false,
+  fullTranscript: '',
+  onUpdate: null,
+  onStatusChange: null,
+  _audioContext: null,
+  _workletNode: null,
+  _mediaStream: null,
+
+  /**
+   * AmiVoice WebSocket接続を開いてリアルタイム認識を開始
+   * @param {function} onUpdate    (fullText, interimText) => void
+   * @param {function} onStatus    (status, detail) => void
+   * @param {string|null} deviceId マイクデバイスID
+   */
+  async start(onUpdate, onStatusChange, deviceId = null) {
+    const settings = Config.load();
+    const appKey = settings.amivoiceApiKey;
+    if (!appKey) throw new Error('AmiVoice APIキーが設定されていません。設定画面で入力してください。');
+
+    this.fullTranscript = '';
+    this.onUpdate = onUpdate;
+    this.onStatusChange = onStatusChange;
+    this.isListening = true;
+
+    // マイクストリーム取得
+    const constraints = { audio: deviceId ? { deviceId: { exact: deviceId } } : true };
+    this._mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
+
+    // AudioContext / AudioWorklet でPCM16をキャプチャ
+    this._audioContext = new AudioContext({ sampleRate: 16000 });
+    const source = this._audioContext.createMediaStreamSource(this._mediaStream);
+
+    // ScriptProcessorNode（AudioWorkletが使えない環境向けフォールバック）
+    const bufferSize = 4096;
+    const processor = this._audioContext.createScriptProcessor(bufferSize, 1, 1);
+
+    // WebSocket接続（医療エンジン: a-medical, ログなし）
+    const wsUrl = `wss://acp-api.amivoice.com/v1/nict-asr?u=${encodeURIComponent(appKey)}&a=-a-medical-input`;
+    this.ws = new WebSocket(wsUrl);
+    this.ws.binaryType = 'arraybuffer';
+
+    this.ws.onopen = () => {
+      console.log('[AmiVoice] WebSocket connected');
+      this._emitStatus('listening', 'AmiVoice 認識中');
+
+      // 接続確立後に音声データの流し込み開始
+      source.connect(processor);
+      processor.connect(this._audioContext.destination);
+
+      processor.onaudioprocess = (e) => {
+        if (!this.isListening || !this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+        const float32 = e.inputBuffer.getChannelData(0);
+        // Float32 → Int16 PCM変換
+        const int16 = new Int16Array(float32.length);
+        for (let i = 0; i < float32.length; i++) {
+          int16[i] = Math.max(-32768, Math.min(32767, float32[i] * 32768));
+        }
+        // AmiVoice プロトコル: 音声データは 'p' + バイナリ
+        const header = new Uint8Array([0x70]); // 'p'
+        const combined = new Uint8Array(header.byteLength + int16.buffer.byteLength);
+        combined.set(header, 0);
+        combined.set(new Uint8Array(int16.buffer), header.byteLength);
+        this.ws.send(combined.buffer);
+      };
+
+      this._processor = processor;
+      this._source = source;
+    };
+
+    this.ws.onmessage = (event) => {
+      try {
+        const msg = JSON.parse(event.data);
+        // text: 確定, results: 途中結果
+        if (msg.type === 'RESULT') {
+          if (msg.text !== undefined) {
+            this.fullTranscript += msg.text;
+            console.log('[AmiVoice] Final:', msg.text);
+          }
+          const interim = msg.results?.[0]?.text || '';
+          if (this.onUpdate) this.onUpdate(this.fullTranscript, interim);
+        } else if (msg.type === 'HEARTBEAT') {
+          // 無視
+        } else {
+          console.log('[AmiVoice] msg:', msg);
+        }
+      } catch (e) {
+        console.warn('[AmiVoice] Parse error:', e, event.data);
+      }
+    };
+
+    this.ws.onerror = (e) => {
+      console.error('[AmiVoice] WebSocket error:', e);
+      this._emitStatus('error', 'AmiVoice接続エラー');
+    };
+
+    this.ws.onclose = (e) => {
+      console.log('[AmiVoice] WebSocket closed:', e.code, e.reason);
+      if (this.isListening) {
+        this._emitStatus('stopped', 'AmiVoice接続が切れました');
+      }
+    };
+  },
+
+  /**
+   * 認識停止 → 最終テキストを返す
+   */
+  stop() {
+    this.isListening = false;
+
+    // 音声パイプライン解体
+    if (this._processor) { try { this._processor.disconnect(); } catch(e) {} this._processor = null; }
+    if (this._source)    { try { this._source.disconnect(); }    catch(e) {} this._source = null; }
+    if (this._audioContext) { try { this._audioContext.close(); } catch(e) {} this._audioContext = null; }
+    if (this._mediaStream) {
+      this._mediaStream.getTracks().forEach(t => t.stop());
+      this._mediaStream = null;
+    }
+
+    // WebSocket終了通知（'e' コマンド）
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      try { this.ws.send(new Uint8Array([0x65]).buffer); } catch(e) {} // 'e' = end
+      setTimeout(() => { try { this.ws.close(); } catch(e) {} }, 500);
+    }
+    this.ws = null;
+
+    this._emitStatus('stopped', 'AmiVoice 停止');
+    console.log('[AmiVoice] Stopped, transcript:', this.fullTranscript.length, 'chars');
+    return this.fullTranscript;
+  },
+
+  getCurrentText() {
+    return this.fullTranscript;
+  },
+
+  _emitStatus(status, detail) {
+    if (typeof this.onStatusChange === 'function') {
+      try { this.onStatusChange(status, detail); } catch(e) {}
+    }
   }
 };
 
@@ -1386,7 +1533,7 @@ ${transcript}`;
     try {
       const settings = Config.load();
       const engine = settings.speechEngine || 'whisper';
-      const isCloudEngine = engine === 'whisper' || engine === 'gemini';
+      const isCloudEngine = engine === 'whisper' || engine === 'gemini' || engine === 'amivoice';
       const deviceId = settings.micDeviceId !== 'default' ? settings.micDeviceId : null;
 
       // ★ 即座にUIフィードバック（getUserMedia待ちの間もユーザーに状態を伝える）
@@ -1984,6 +2131,9 @@ ${transcript}`;
     const settings = Config.load();
     document.getElementById('geminiApiKey').value = settings.geminiApiKey || '';
     document.getElementById('openaiApiKey').value = settings.openaiApiKey || '';
+    if (document.getElementById('amivoiceApiKey')) {
+      document.getElementById('amivoiceApiKey').value = settings.amivoiceApiKey || '';
+    }
     document.getElementById('gasUrl').value = settings.gasUrl || '';
     if (document.getElementById('customVocabulary')) {
       document.getElementById('customVocabulary').value = settings.customVocabulary || '';
@@ -1997,7 +2147,6 @@ ${transcript}`;
 
     const micSelect = document.getElementById('micDeviceSelect');
     if (micSelect && settings.micDeviceId) {
-      // 選択肢が描画されるのを少し待つ
       setTimeout(() => {
         micSelect.value = settings.micDeviceId;
       }, 500);
@@ -2009,6 +2158,7 @@ ${transcript}`;
     const settings = {
       geminiApiKey: document.getElementById('geminiApiKey').value.trim(),
       openaiApiKey: document.getElementById('openaiApiKey').value.trim(),
+      amivoiceApiKey: document.getElementById('amivoiceApiKey')?.value.trim() || '',
       gasUrl: document.getElementById('gasUrl').value.trim(),
       customVocabulary: cvEl ? cvEl.value : '',
       aiProvider: document.querySelector('input[name="aiProvider"]:checked')?.value || 'gemini',

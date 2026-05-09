@@ -302,6 +302,11 @@
             <input type="password" id="openaiApiKey" placeholder="sk-...">
             <p class="hint">Whisper API（高精度音声認識）に使用</p>
           </div>
+          <div class="setting-item">
+            <label for="amivoiceApiKey">AmiVoice API Key ⭐推奨</label>
+            <input type="password" id="amivoiceApiKey" placeholder="AmiVoice Cloud Platform のAPIキー">
+            <p class="hint">医療特化エンジン（薬品名・医療用語に最強精度）→ <a href="https://acp.amivoice.com/" target="_blank" style="color:var(--primary);">acp.amivoice.com</a> で取得</p>
+          </div>
         </section>
 
         <section class="card settings-card">
@@ -317,6 +322,10 @@
           <h3>🎙 音声認識・薬歴AI</h3>
           <div class="setting-item">
             <label style="font-weight:600; font-size:13px; margin-bottom:4px; display:block;">音声認識エンジン</label>
+            <label style="display:flex; align-items:center; gap:6px; padding:8px; background:rgba(34,197,94,0.08); border-radius:8px; border:1px solid rgba(34,197,94,0.3); margin-bottom:6px;">
+              <input type="radio" name="speechEngine" value="amivoice">
+              <span>🏥 <strong>AmiVoice 医療エンジン</strong>（リアルタイム・最高精度 ⭐推奨）</span>
+            </label>
             <label>
               <input type="radio" name="speechEngine" value="webSpeech">
               ブラウザ標準（無料・不安定）
