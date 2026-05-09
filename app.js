@@ -232,7 +232,7 @@ const GeminiClient = {
   /**
    * テキストからSOAPを生成（複数モデル+APIバージョンフォールバック）
    */
-  async generateSOAP(transcript, drugInfo) {
+  async generateSOAP(transcript, drugInfo, scenarioContext = null) {
     const settings = Config.load();
     const apiKey = settings.geminiApiKey;
 
@@ -240,7 +240,7 @@ const GeminiClient = {
       throw new Error('Gemini APIキーが設定されていません。設定画面でAPIキーを入力してください。');
     }
 
-    const prompt = this._buildPrompt(transcript, drugInfo);
+    const prompt = this._buildPrompt(transcript, drugInfo, scenarioContext);
 
     const requestBody = {
       contents: [{
@@ -404,15 +404,19 @@ const GeminiClient = {
     return null;
   },
 
-  _buildPrompt(transcript, drugInfo) {
+  _buildPrompt(transcript, drugInfo, scenarioContext = null) {
     const dictSection = drugInfo?.trim()
       ? `## 処方薬情報（NSIPSから取得）\n${drugInfo}\n\n`
+      : '';
+
+    const scenarioSection = scenarioContext
+      ? `## 処方シナリオ（指導内容の文脈）\n${scenarioContext}\n\n`
       : '';
 
     return `あなたは日本の保険薬局に勤務するベテラン薬剤師です。
 以下の服薬指導の会話テキストをSOAP形式の薬歴JSONに変換してください。
 
-${dictSection}## 会話テキスト
+${scenarioSection}${dictSection}## 会話テキスト
 ${transcript}
 
 ## SOAP記載基準
@@ -426,6 +430,7 @@ ${transcript}
 
 ## 出力ルール
 - 会話に記載のない情報でS・O・Pを補完しない（情報がない場合は該当フィールドを "" にする）
+- 処方シナリオが指定されている場合、Aにはシナリオに応じた薬学的分析を記載する
 - Aは薬学的推論を記述してよいが、断定的な診断表現は避ける
 - summaryは体言止め20文字以内、患者の主訴または今回の指導の核心を記載
 - transcriptは話者ラベル付き（「薬剤師:」「患者:」）に整形し、元の発言内容は改変しない
@@ -440,6 +445,7 @@ ${transcript}
   "summary": "string（20文字以内）"
 }`;
   },
+
 
   _extractSOAPFromText(text) {
     const jsonMatch = text.match(/```json\s*([\s\S]*?)```/) || text.match(/\{[\s\S]*\}/);
@@ -836,6 +842,47 @@ const App = {
   currentTab: 'soap',
   yakurekiTranscript: '',
   _maxRecTimer: null,        // 🔒 最大録音タイムアウト用タイマー
+  selectedScenario: null,    // 🏥 処方シナリオ（1〜4）
+
+  // 処方シナリオ定義
+  SCENARIOS: {
+    first: {
+      id: 'first',
+      label: '初回処方',
+      icon: '🆕',
+      color: '#2563eb',
+      bg: 'rgba(37,99,235,0.08)',
+      border: 'rgba(37,99,235,0.35)',
+      context: `これは「初回処方」の服薬指導です。初めて処方された薬であるため、薬の効果・副作用・服用方法について詳しく説明し、服薬指導を行いました。患者さんの理解度を確認し、不安があれば丁寧に回答しました。`
+    },
+    acute: {
+      id: 'acute',
+      label: '急性期',
+      icon: '⚡',
+      color: '#d97706',
+      bg: 'rgba(217,119,6,0.08)',
+      border: 'rgba(217,119,6,0.35)',
+      context: `これは「急性期処方（単発処方）」で、症状の改善を目的とした短期間の薬物治療です。薬の効果と注意点を説明し、症状に応じた養生法（安靜・水分補給・生活習慣の改善等）について指導しました。内服中は飲み切るよう指導し、症状が改善しない場合や悪化した場合は再受診するよう説明しました。`
+    },
+    do_rx: {
+      id: 'do_rx',
+      label: 'DO処方',
+      icon: '✅',
+      color: '#059669',
+      bg: 'rgba(5,150,105,0.08)',
+      border: 'rgba(5,150,105,0.35)',
+      context: `これは「継続処方（Do処方）」で、患者さんは薬をしっかりと使用できており、副作用もなく経過良好です。残薬がないことを確認しました。副作用・自覚症状の問診では特記すべき訴えはありませんでした。継続に問題ないと判断し、今後も同様に使用を続けていただくよう指導しました。`
+    },
+    change: {
+      id: 'change',
+      label: '処方変更',
+      icon: '🔄',
+      color: '#7c3aed',
+      bg: 'rgba(124,58,237,0.08)',
+      border: 'rgba(124,58,237,0.35)',
+      context: `これは「処方変更」があります。変更理由、新しい薬の効果・副作用・服用方法について重点的に説明し、変更点に関する患者さんの理解度を確認しました。旧薬の残薬がないことを確認し、変更に際しアレルギー歴を再確認し問題ないことを確認しました。`
+    }
+  },
 
   async init() {
     this.recorder = new AudioRecorder();
@@ -1395,16 +1442,60 @@ ${transcript}`;
   },
 
   /**
+   * 処方シナリオを選択 / 解除
+   */
+  selectScenario(id) {
+    if (this.selectedScenario === id) {
+      // 同じボタンを再度タップ → 解除
+      this.selectedScenario = null;
+    } else {
+      this.selectedScenario = id;
+    }
+    // 全てのシナリオボタンUIを更新
+    document.querySelectorAll('.scenario-btn').forEach(btn => {
+      const s = this.SCENARIOS[btn.dataset.scenario];
+      if (!s) return;
+      const isActive = btn.dataset.scenario === this.selectedScenario;
+      btn.style.background    = isActive ? s.color : s.bg;
+      btn.style.color         = isActive ? '#fff'  : s.color;
+      btn.style.borderColor   = isActive ? s.color : s.border;
+      btn.style.fontWeight    = isActive ? '700'   : '500';
+      btn.style.transform     = isActive ? 'scale(1.03)' : 'scale(1)';
+    });
+    // バッジ更新
+    const badge = document.getElementById('scenarioBadge');
+    if (badge) {
+      if (this.selectedScenario) {
+        const s = this.SCENARIOS[this.selectedScenario];
+        badge.textContent = `${s.icon} ${s.label}シナリオ選択中`;
+        badge.style.display = 'inline-block';
+        badge.style.background = s.bg;
+        badge.style.color = s.color;
+        badge.style.borderColor = s.border;
+      } else {
+        badge.style.display = 'none';
+      }
+    }
+    if (this.selectedScenario) {
+      const s = this.SCENARIOS[this.selectedScenario];
+      this.toast(`${s.icon} ${s.label}シナリオを選択しました`);
+    } else {
+      this.toast('シナリオの選択を解除しました');
+    }
+  },
+
+  /**
    * テキスト直接入力からSOAP生成
    */
   async generateFromText() {
     const text = document.getElementById('manualTranscriptInput').value.trim();
-    if (!text) {
-      this.toast('⚠️ 会話内容を入力してください', 'error');
+    // シナリオのみ選択しておりテキストが空の場合はシナリオコンテキストだけで生成
+    if (!text && !this.selectedScenario) {
+      this.toast('⚠️ 会話内容を入力するか、シナリオを選択してください', 'error');
       return;
     }
-    this.toast('🧠 テキストからSOAP生成中...');
-    await this.processTranscript(text);
+    this.toast('🧠 SOAP生成中...');
+    await this.processTranscript(text || '(会話なし・シナリオのみ)');
   },
 
   showScreen(screenId) {
@@ -2049,11 +2140,20 @@ ${transcript}`;
     document.getElementById('soapContent').classList.add('hidden');
 
     try {
-      document.getElementById('processingStatus').textContent = 'テキストからSOAP生成中...';
+      const scenarioLabel = this.selectedScenario
+        ? this.SCENARIOS[this.selectedScenario]?.label
+        : 'シナリオなし';
+      document.getElementById('processingStatus').textContent =
+        `SOAP生成中...${this.selectedScenario ? `（${scenarioLabel}）` : ''}`;
       const drugInfo = document.getElementById('drugInput').value.trim();
+
+      // シナリオコンテキストを取得
+      const scenarioContext = this.selectedScenario
+        ? this.SCENARIOS[this.selectedScenario]?.context || null
+        : null;
       
       // テキストのみ送信（音声トークン不要！）
-      const soapData = await GeminiClient.generateSOAP(transcript, drugInfo);
+      const soapData = await GeminiClient.generateSOAP(transcript, drugInfo, scenarioContext);
 
       this.currentSOAP = soapData;
       this.displaySOAP(soapData);

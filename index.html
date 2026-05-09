@@ -55,6 +55,47 @@
         </select>
       </section>
 
+      <!-- 処方シナリオ選択 -->
+      <section class="card" style="border-color: rgba(16,185,129,0.2); padding-top:12px; padding-bottom:12px;">
+        <div style="font-size:12px; font-weight:600; color:var(--text-muted); margin-bottom:8px; letter-spacing:0.5px;">
+          🏥 処方シナリオ <span style="font-weight:400;opacity:0.7;">（任意 — 未選択でも動作します）</span>
+        </div>
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:6px;">
+          <button class="scenario-btn" data-scenario="first"
+            onclick="App.selectScenario('first')"
+            style="padding:8px 4px; border-radius:10px; border:1.5px solid rgba(37,99,235,0.35);
+                   background:rgba(37,99,235,0.08); color:#2563eb; font-size:13px; font-weight:500;
+                   cursor:pointer; transition:all 0.18s; display:flex; align-items:center; justify-content:center; gap:4px;">
+            🆕 初回処方
+          </button>
+          <button class="scenario-btn" data-scenario="acute"
+            onclick="App.selectScenario('acute')"
+            style="padding:8px 4px; border-radius:10px; border:1.5px solid rgba(217,119,6,0.35);
+                   background:rgba(217,119,6,0.08); color:#d97706; font-size:13px; font-weight:500;
+                   cursor:pointer; transition:all 0.18s; display:flex; align-items:center; justify-content:center; gap:4px;">
+            ⚡ 急性期
+          </button>
+          <button class="scenario-btn" data-scenario="do_rx"
+            onclick="App.selectScenario('do_rx')"
+            style="padding:8px 4px; border-radius:10px; border:1.5px solid rgba(5,150,105,0.35);
+                   background:rgba(5,150,105,0.08); color:#059669; font-size:13px; font-weight:500;
+                   cursor:pointer; transition:all 0.18s; display:flex; align-items:center; justify-content:center; gap:4px;">
+            ✅ DO処方
+          </button>
+          <button class="scenario-btn" data-scenario="change"
+            onclick="App.selectScenario('change')"
+            style="padding:8px 4px; border-radius:10px; border:1.5px solid rgba(124,58,237,0.35);
+                   background:rgba(124,58,237,0.08); color:#7c3aed; font-size:13px; font-weight:500;
+                   cursor:pointer; transition:all 0.18s; display:flex; align-items:center; justify-content:center; gap:4px;">
+            🔄 処方変更
+          </button>
+        </div>
+        <div id="scenarioBadge"
+          style="display:none; margin-top:8px; padding:5px 10px; border-radius:20px;
+                 border:1px solid; font-size:12px; font-weight:600; text-align:center;">
+        </div>
+      </section>
+
       <!-- 録音コントロール -->
       <section class="card recorder-card">
         <div class="recording-visualizer" id="visualizer">
@@ -104,7 +145,7 @@
           <h2>テキストからSOAP生成</h2>
         </div>
         <textarea id="manualTranscriptInput" placeholder="会話内容を入力してください&#10;例:&#10;患者「最近血圧が高くて心配です」&#10;薬剤師「お薬はきちんと飲めていますか？」&#10;患者「朝はたまに忘れてしまいます」" rows="5" style="width:100%; background:var(--bg-input); border:1px solid rgba(0,0,0,0.08); border-radius:10px; padding:14px 16px; color:var(--text-primary); font-family:var(--font-main); font-size:14px; line-height:1.6; resize:vertical;"></textarea>
-        <p class="hint" style="margin-bottom:12px;">録音の代わりに、会話内容をテキストで入力できます</p>
+        <p class="hint" style="margin-bottom:12px;">録音の代わりに、会話内容をテキストで入力できます。シナリオ選択と組み合わせると会話が短くてもSOAPが完成します。</p>
         <button id="generateFromTextBtn" class="action-btn primary-btn">
           🧠 この内容でSOAP生成
         </button>
