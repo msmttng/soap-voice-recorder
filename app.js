@@ -1124,7 +1124,21 @@ const App = {
       document.getElementById('yakurekiTranscriptText').innerHTML =
         '⏳ AmiVoice 認識結果を取得中...';
       speechText = AmiVoiceClient.stop();
-      document.getElementById('yakurekiTranscriptText').textContent = speechText || '(認識結果なし)';
+      if (speechText) {
+        document.getElementById('yakurekiTranscriptText').textContent = speechText;
+      } else if (recording && recording.blob && recording.blob.size > 0) {
+        // 🔄 AmiVoice空 → Geminiフォールバック
+        document.getElementById('yakurekiTranscriptText').innerHTML =
+          '⏳ Gemini で音声を文字起こし中（フォールバック）...';
+        try {
+          speechText = await GeminiClient.transcribeAudio(recording.blob, recording.mimeType, drugInfo);
+          document.getElementById('yakurekiTranscriptText').textContent = speechText;
+        } catch (fbErr) {
+          document.getElementById('yakurekiTranscriptText').textContent = `❌ 文字起こし失敗: ${fbErr.message}`;
+        }
+      } else {
+        document.getElementById('yakurekiTranscriptText').textContent = '(認識結果なし)';
+      }
     } else {
       // Speech API 停止
       try {
@@ -1845,6 +1859,20 @@ ${transcript}`;
         if (this._visibilityRecovery) {
           document.removeEventListener('visibilitychange', this._visibilityRecovery);
           this._visibilityRecovery = null;
+        }
+
+        // 🔄 AmiVoiceが空の場合 → Geminiで音声Blobから文字起こし（自動フォールバック）
+        if (!transcript && recording && recording.blob && recording.blob.size > 0) {
+          this.toast('⚠️ AmiVoice未取得 → Geminiで文字起こし中...', 'error');
+          document.getElementById('liveTranscriptText').innerHTML =
+            '⏳ Gemini で音声を文字起こし中（フォールバック）...<br><span style="font-size:12px; color:var(--text-muted)">AmiVoice WebSocket未接続のためGeminiを使用</span>';
+          try {
+            transcript = await GeminiClient.transcribeAudio(recording.blob, recording.mimeType, drugInfo);
+            console.log(`[App] AmiVoice fallback (Gemini): ${transcript.length} chars`);
+          } catch (fbErr) {
+            console.error('[App] AmiVoice fallback failed:', fbErr);
+            this.toast(`❌ フォールバック失敗: ${fbErr.message}`, 'error');
+          }
         }
       } else {
         // Web Speech APIの結果取得を試みる
