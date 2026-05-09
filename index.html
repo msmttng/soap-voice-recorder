@@ -372,6 +372,27 @@
           </div>
         </section>
 
+        <section class="card settings-card" style="border-color: rgba(239,68,68,0.3);">
+          <h3>🔒 過剰課金防止</h3>
+          <div class="setting-item">
+            <label for="maxRecordingMinutes">最大録音時間（分）</label>
+            <div style="display:flex; align-items:center; gap:10px;">
+              <input type="number" id="maxRecordingMinutes" min="1" max="60" value="10"
+                style="width:80px; padding:8px; border-radius:8px; border:1px solid rgba(0,0,0,0.1);
+                       background:var(--bg-input); color:var(--text-primary); font-size:15px; text-align:center;">
+              <span style="font-size:13px; color:var(--text-muted);">分（1〜60分）</span>
+            </div>
+            <p class="hint">この時間を超えると録音を自動停止します。服薬指導は通常3〜5分のため、デフォルトは10分。</p>
+          </div>
+          <div style="background:rgba(239,68,68,0.06); border-radius:8px; padding:10px 12px; margin-top:8px; font-size:12px; color:var(--text-muted); line-height:1.7;">
+            <strong>✅ 自動で有効な安全装置</strong><br>
+            ・タブを閉じる・リロード → AmiVoice即時切断<br>
+            ・タブを切り替え・スリープ → AmiVoice自動停止<br>
+            ・最大時間超過 → 録音を強制終了しSOAP生成へ
+          </div>
+        </section>
+
+
         <button id="saveSettingsBtn" class="action-btn primary-btn">
           💾 設定を保存
         </button>

@@ -23,7 +23,8 @@ const Config = {
     customVocabulary: '',
     aiProvider: 'gemini',
     speechEngine: 'whisper',
-    micDeviceId: 'default'
+    micDeviceId: 'default',
+    maxRecordingMinutes: 10   // 🔒 過剰課金防止: 最大録音時間（分）
   },
 
   load() {
@@ -834,6 +835,7 @@ const App = {
   selectedPatient: null,
   currentTab: 'soap',
   yakurekiTranscript: '',
+  _maxRecTimer: null,        // 🔒 最大録音タイムアウト用タイマー
 
   async init() {
     this.recorder = new AudioRecorder();
@@ -845,6 +847,30 @@ const App = {
     this.loadPatients();
     await this.loadMicrophones();
     this.loadSettings();
+
+    // =========================================================
+    // 🔒 過剰課金防止 B: ページ離脱 / タブ非表示で強制停止
+    // =========================================================
+    window.addEventListener('beforeunload', () => {
+      // ページを閉じる・リロード時に AmiVoice 接続を即時切断
+      if (AmiVoiceClient.isListening) {
+        AmiVoiceClient.stop();
+        console.log('[Safety] AmiVoice stopped on beforeunload');
+      }
+    });
+
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden') {
+        const settings = Config.load();
+        if (settings.speechEngine === 'amivoice' && AmiVoiceClient.isListening) {
+          // タブ非表示（スリープ・アプリ切り替え）で自動停止
+          console.log('[Safety] Tab hidden — stopping AmiVoice to prevent over-billing');
+          this.toast('⚠️ タブが非表示になったため AmiVoice を停止しました（課金防止）', 'error');
+          this.stopRecording();
+        }
+      }
+    });
+
     console.log('[App] Initialized');
   },
 
@@ -1599,7 +1625,22 @@ ${transcript}`;
       }
       
       this.startWaveformAnimation();
-      this.toast('🎙️ 録音開始（画面ロック防止ON）');
+
+      // =========================================================
+      // 🔒 過剰課金防止 A: 最大録音時間タイムアウト
+      // =========================================================
+      const maxMin = Number(Config.load().maxRecordingMinutes) || 10;
+      const maxMs  = maxMin * 60 * 1000;
+      if (this._maxRecTimer) clearTimeout(this._maxRecTimer);
+      this._maxRecTimer = setTimeout(async () => {
+        if (this.recorder.isRecording) {
+          console.warn(`[Safety] Max recording time (${maxMin}min) reached — auto stopping`);
+          this.toast(`⏱ 最大録音時間 ${maxMin}分 に達したため自動停止しました（課金防止）`, 'error');
+          await this.stopRecording();
+        }
+      }, maxMs);
+
+      this.toast(`🎙️ 録音開始（最大${maxMin}分で自動停止）`);
     } catch (err) {
       document.getElementById('recordBtn').style.opacity = '';
       document.getElementById('recordLabel').textContent = 'タップして録音開始';
@@ -1608,6 +1649,12 @@ ${transcript}`;
   },
 
   async stopRecording() {
+    // 🔒 タイムアウトタイマーをクリア（手動停止でも自動停止でも必ず解除）
+    if (this._maxRecTimer) {
+      clearTimeout(this._maxRecTimer);
+      this._maxRecTimer = null;
+    }
+
     try {
       const settings = Config.load();
       const engine = settings.speechEngine || 'whisper';
@@ -2138,6 +2185,9 @@ ${transcript}`;
     if (document.getElementById('customVocabulary')) {
       document.getElementById('customVocabulary').value = settings.customVocabulary || '';
     }
+    if (document.getElementById('maxRecordingMinutes')) {
+      document.getElementById('maxRecordingMinutes').value = settings.maxRecordingMinutes ?? 10;
+    }
     document.querySelectorAll('input[name="aiProvider"]').forEach(r => {
       r.checked = r.value === settings.aiProvider;
     });
@@ -2155,6 +2205,8 @@ ${transcript}`;
 
   saveSettings() {
     const cvEl = document.getElementById('customVocabulary');
+    const maxMinRaw = parseInt(document.getElementById('maxRecordingMinutes')?.value, 10);
+    const maxMin = (!isNaN(maxMinRaw) && maxMinRaw >= 1 && maxMinRaw <= 60) ? maxMinRaw : 10;
     const settings = {
       geminiApiKey: document.getElementById('geminiApiKey').value.trim(),
       openaiApiKey: document.getElementById('openaiApiKey').value.trim(),
@@ -2163,7 +2215,8 @@ ${transcript}`;
       customVocabulary: cvEl ? cvEl.value : '',
       aiProvider: document.querySelector('input[name="aiProvider"]:checked')?.value || 'gemini',
       speechEngine: document.querySelector('input[name="speechEngine"]:checked')?.value || 'whisper',
-      micDeviceId: document.getElementById('micDeviceSelect')?.value || 'default'
+      micDeviceId: document.getElementById('micDeviceSelect')?.value || 'default',
+      maxRecordingMinutes: maxMin
     };
     Config.save(settings);
     this.toast('💾 設定を保存しました');
