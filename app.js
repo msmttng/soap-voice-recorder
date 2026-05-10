@@ -264,14 +264,18 @@ const GeminiClient = {
       throw new Error('Gemini APIキーが設定されていません。設定画面でAPIキーを入力してください。');
     }
 
-    const prompt = this._buildPrompt(transcript, drugInfo, scenarioContext);
+    // ① JS前処理：一般名（2行目）を除去してクリーンな処方薬リストにする
+    const cleanedDrugInfo = this._filterGenericDrugNames(drugInfo);
+
+    // ② systemInstruction（固定ペルソナ層）と contents（動的データ層）を分離
+    const { systemInstruction, userPrompt } = this._buildPrompt(transcript, cleanedDrugInfo, scenarioContext);
 
     const requestBody = {
+      systemInstruction: { parts: [{ text: systemInstruction }] },
       contents: [{
-        parts: [{ text: prompt }]
+        parts: [{ text: userPrompt }]
       }],
       generationConfig: {
-        // [FIXED] Gemini API の responseMimeType を指定してJSON出力を安定化する
         temperature: 0.1,
         topP: 0.8,
         maxOutputTokens: 4096,
@@ -298,7 +302,6 @@ const GeminiClient = {
         console.warn(`[Gemini] ${label} failed:`, err.message);
         errors.push(`${label}: ${err.message}`);
         
-        // 少し待って次へ
         if (i < this.MODEL_CONFIGS.length - 1) {
           if (statusEl && err.isRateLimit) {
             statusEl.textContent = `${cfg.model}: 制限。次のモデルへ...`;
@@ -317,7 +320,6 @@ const GeminiClient = {
       }
     }
     
-    // もう1回だけ全パターン試行
     for (const cfg of this.MODEL_CONFIGS) {
       try {
         if (statusEl) statusEl.textContent = `${cfg.model} で最終リトライ中...`;
@@ -328,6 +330,59 @@ const GeminiClient = {
     }
 
     throw new Error(`全モデルで生成に失敗しました。しばらく時間をおいてお試しください。\n${errors.slice(0, 3).join('\n')}`);
+  },
+
+  /**
+   * [Layer 1] JS前処理：NSIPSの一般名（2行目）を除去する
+   * NSIPSは「商品名」の直後に「一般名・成分名」が来るパターンが多い。
+   * 化学名語尾（塩酸塩・ナトリウム・水和物・配合等）を持つ行が、
+   * 直前行の商品名と「意味的に同一の薬」である場合に除去する。
+   * ただし、安全性を優先し、「除去できると確信できる行のみ」を除去する。
+   */
+  _filterGenericDrugNames(drugInfo) {
+    if (!drugInfo?.trim()) return drugInfo;
+
+    // 一般名・成分名として高頻度で使われる語尾パターン
+    const genericSuffixPattern = /(
+      塩酸塩|硫酸塩|硝酸塩|酒石酸塩|フマル酸塩|マレイン酸塩|クエン酸塩|リン酸塩|
+      ナトリウム|カリウム|カルシウム|マグネシウム|亜鉛|鉄|アルミニウム|
+      水和物|無水物|一水和物|三水和物|
+      配合錠$|配合散$|配合顆粒$|配合液$|配合点眼液$|配合カプセル$|配合注射液$|
+      エステル|プロドラッグ
+    )/x;
+
+    // 商品名を示す可能性が高いパターン（あれば前行は商品名と判断）
+    const brandNamePattern = /[「」（\(]|錠\d|散\d|mg|μg|ｍｇ|μｇ|ＭＧ|AG|OD錠|DS|点眼|軟膏|クリーム|テープ|パッチ/;
+
+    const lines = drugInfo.split('\n').map(l => l.trim()).filter(l => l);
+    const filtered = [];
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const prevLine = filtered.length > 0 ? filtered[filtered.length - 1] : null;
+
+      // 前の行が存在し、かつ現在行が一般名語尾パターンにマッチする場合のみ除去候補
+      const isGenericSuffix = /塩酸塩|硫酸塩|硝酸塩|酒石酸塩|フマル酸塩|マレイン酸塩|クエン酸塩|リン酸塩|ナトリウム|カリウム|カルシウム|マグネシウム|水和物|無水物|エステル/.test(line);
+      const endsWithDosageForm = /(?:配合錠|配合散|配合顆粒|配合液|配合点眼液|配合カプセル|配合注射液)$/.test(line.replace(/[\s\u3000]/g, ''));
+      const hasFullWidthOnlyAndForm = /^[\u3000-\u9FFF\uFF00-\uFFEF\s]+$/.test(line);
+
+      if (prevLine && (isGenericSuffix || endsWithDosageForm)) {
+        // 前行が商品名らしい場合のみ除去（単独の一般名薬は保護）
+        const prevIsBrandLike = brandNamePattern.test(prevLine) || /[A-Za-z｢｣]|[ｦ-ﾟ]/.test(prevLine);
+        if (prevIsBrandLike) {
+          Logger.log(`[DrugFilter] 一般名と判定して除去: 「${line}」（前行: 「${prevLine}」）`, 'info');
+          continue; // 除去（filterからスキップ）
+        }
+      }
+
+      filtered.push(line);
+    }
+
+    const result = filtered.join('\n');
+    if (result !== drugInfo.trim()) {
+      Logger.log(`[DrugFilter] 前処理完了: ${lines.length}行 → ${filtered.length}行`, 'info');
+    }
+    return result;
   },
 
   /**
@@ -428,46 +483,73 @@ const GeminiClient = {
     return null;
   },
 
+  /**
+   * [Layer 2+3] systemInstruction（固定ペルソナ層）と userPrompt（動的データ層）を生成
+   * systemInstruction: 役割定義・絶対ルール（会話が変わっても不変の部分）
+   * userPrompt: 処方薬情報 + 会話テキスト（都度変わるデータ）
+   */
   _buildPrompt(transcript, drugInfo, scenarioContext = null) {
-    const dictSection = drugInfo?.trim()
-      ? `## 処方薬情報（NSIPSから取得）\n${drugInfo}\n\n`
-      : '';
+    // ── systemInstruction（固定・ペルソナ層） ──
+    const systemInstruction = `あなたは日本の保険薬局に勤務するベテラン薬剤師（薬歴記載専門）です。
+服薬指導の会話テキストを受け取り、薬局薬歴として適切なSOAP形式のJSONを出力することが唯一の仕事です。
 
-    const scenarioSection = scenarioContext
-      ? `## 処方シナリオ（指導内容の文脈）\n${scenarioContext}\n\n`
-      : '';
+## あなたの絶対ルール（違反は重大な医療記録の誤りになります）
 
-    return `あなたは日本の保険薬局に勤務するベテラン薬剤師です。
-以下の服薬指導の会話テキストをSOAP形式の薬歴JSONに変換してください。
+### 【捏造・補完の禁止】
+- 会話テキストに存在しない情報を、いかなる理由があっても S・O・A・P のどの欄にも記載しない。
+- 処方薬情報が提供されていても、「その薬について会話で言及がなければ指導したと推定して書く」ことは厳禁。
+- 情報がない欄は必ず空文字 "" にする。
 
-${scenarioSection}${dictSection}## 会話テキスト
-${transcript}
+### 【処方薬情報の取り扱い】
+- 処方薬情報（NSIPSから取得）には、実際に交付した薬の名称（商品名・AG名など）に続けて、その一般名・成分名が2行目として列挙されている場合がある。
+- 2行目の一般名・成分名はすでに前処理で除去済みだが、もし残っていても無視し、1行目の名称のみを正式な薬名として使用すること。
+- 処方薬情報はO欄への処方内容記載、および薬名の表記ゆれ補正にのみ使用する。
 
-## SOAP記載基準
+### 【A欄（薬学的評価）の品質基準】
+A欄には以下の観点から薬学的な評価・考察を記載する:
+1. 今回の処方変更・継続の薬学的意義（なぜこの薬が選択されているか）
+2. 副作用リスクの評価（リスクを認識した上で問題なし、等も含む）
+3. 相互作用・重複投薬の評価
+4. 患者の服薬アドヒアランス・理解度の評価
+5. 前回と比較した変化（悪化・改善・不変）
+※ 断定的な診断表現（「〇〇病である」等）は避け、薬学的観点からの推論として記載する。
+※ 会話から読み取れる範囲で記載し、根拠のない推測はしない。
 
-| 項目 | 記載できる情報源 | 記載禁止 |
-|------|----------------|---------|
-| S（主観的情報）| 患者の発言のみ。症状・不安・自己申告の服薬状況 | 薬剤師の解釈・推測 |
-| O（客観的情報）| 処方内容・薬剤師の観察・お薬手帳情報・バイタル（言及時のみ） | 患者の主観的訴え |
-| A（薬学的評価）| 薬学的知識に基づく評価・副作用リスク・相互作用・効果判定 | SとOで確認できない事実の断定 |
-| P（指導計画）| 実施した指導内容・患者への助言・次回確認事項・処方医への連絡要否 | 実施していない指導の記載 |
+### 【P欄（指導計画）の品質基準】
+P欄には以下を記載する:
+1. 実施した指導内容（何を説明・指導したか）
+2. 確認した事項とその結果（「〇〇を確認、問題なし」も重要な記録）
+3. 患者への具体的なアドバイス
+4. 次回確認すべき事項
+5. 処方医への情報提供・連絡要否
+※ 実施していない指導を捏造しない。ただし「確認して問題なしと判断した」事実は積極的に記録する。
 
-## 出力ルール
-- 会話に記載のない情報でS・O・Pを補完しない（情報がない場合は該当フィールドを "" にする）
-- 処方シナリオが指定されている場合、Aにはシナリオに応じた薬学的分析を記載する
-- Aは薬学的推論を記述してよいが、断定的な診断表現は避ける
-- summaryは体言止め20文字以内、患者の主訴または今回の指導の核心を記載
-- transcriptは話者ラベル付き（「薬剤師:」「患者:」）に整形し、元の発言内容は改変しない
-
-## 出力形式（JSONのみ・前後に文章不要）
+## 出力形式
+以下のJSONのみを出力する（前後に説明文・マークダウン不要）:
 {
-  "transcript": "薬剤師: ...\\n患者: ...",
+  "transcript": "薬剤師: ...\n患者: ...",
   "S": "string",
   "O": "string",
   "A": "string",
   "P": "string",
-  "summary": "string（20文字以内）"
+  "summary": "体言止め20文字以内"
 }`;
+
+    // ── userPrompt（動的・データ層） ──
+    const drugSection = drugInfo?.trim()
+      ? `## 今回の処方薬情報（NSIPSより取得・前処理済み）\n${drugInfo}\n\n`
+      : '';
+
+    const scenarioSection = scenarioContext
+      ? `## 処方シナリオ・指導文脈\n${scenarioContext}\n\n`
+      : '';
+
+    const userPrompt = `${scenarioSection}${drugSection}## 服薬指導の会話テキスト
+${transcript}
+
+上記の会話をSOAP形式の薬局薬歴JSONに変換してください。`;
+
+    return { systemInstruction, userPrompt };
   },
 
 
