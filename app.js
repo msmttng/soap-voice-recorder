@@ -2781,3 +2781,32 @@ ${transcript}`;
 // 起動
 // ==============================================
 document.addEventListener('DOMContentLoaded', () => App.init());
+
+// ==============================================
+// 外部拡張機能（Chrome Extension）連携 API
+// ==============================================
+window.addEventListener("message", (event) => {
+  if (!event.data) return;
+
+  // 1. SOAPテキストの取得要求
+  if (event.data.action === "getSoapText") {
+    const text = document.getElementById("soapResult").value || "";
+    event.source.postMessage({ action: "soapTextResult", text: text }, event.origin);
+  }
+
+  // 2. 患者の自動選択要求
+  if (event.data.action === "autoClickPatient") {
+    const searchName = event.data.name;
+    const items = document.querySelectorAll("#patientList .patient-item");
+    let found = false;
+    for (let item of items) {
+      // スペース等を除去して部分一致検索
+      if (item.innerText.replace(/\s+/g, '').includes(searchName.replace(/\s+/g, ''))) {
+        item.click();
+        found = true;
+        break;
+      }
+    }
+    event.source.postMessage({ action: "autoClickResult", success: found }, event.origin);
+  }
+});
