@@ -694,10 +694,17 @@ const AmiVoiceClient = {
       this.ws.send(buf.buffer);
     };
 
-    // スピーカーには繋がない（ハウリング防止）
+    // Chrome等は destination に繋がないと onaudioprocess が発火しないため、
+    // ハウリング防止として Gain=0（無音）のノードを介して接続する
     source.connect(processor);
+    const gainNode = this._audioContext.createGain();
+    gainNode.gain.value = 0;
+    processor.connect(gainNode);
+    gainNode.connect(this._audioContext.destination);
+
     this._processor = processor;
     this._source = source;
+    this._gainNode = gainNode;
 
     // 正しいエンドポイント: wss://acp-api.amivoice.com/v1/nolog/ （末尾スラッシュ必須）
     // ログ保存なしにする場合: wss://acp-api.amivoice.com/v1/nolog/
@@ -823,6 +830,7 @@ const AmiVoiceClient = {
 
       // 音声パイプライン解体
       if (this._processor) { try { this._processor.disconnect(); } catch(e) {} this._processor = null; }
+      if (this._gainNode)  { try { this._gainNode.disconnect(); }  catch(e) {} this._gainNode = null; }
       if (this._source)    { try { this._source.disconnect(); }    catch(e) {} this._source = null; }
       if (this._audioContext) { try { this._audioContext.close(); } catch(e) {} this._audioContext = null; }
       if (this._mediaStream) {
