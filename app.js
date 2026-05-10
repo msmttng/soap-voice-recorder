@@ -245,12 +245,17 @@ const SpeechTranscriber = {
 // Gemini API クライアント（テキストのみ版）
 // ==============================================
 const GeminiClient = {
-  // クォータがあるモデルのみ使用（2.x系はlimit:0で使用不可）
+  // SOAP生成用モデル（コスト最適化: 2モデルに絞りフォールバック上限を設ける）
   MODEL_CONFIGS: [
+    { model: 'gemini-2.5-flash-lite', api: 'v1beta' },  // 第1候補: 最軽量・最安価
+    { model: 'gemini-2.5-flash',      api: 'v1beta' },  // 第2候補: 制限時のフォールバック
+  ],
+  // 文字起こし用モデル（音声処理対応モデル）
+  TRANSCRIBE_CONFIGS: [
     { model: 'gemini-2.5-flash-lite', api: 'v1beta' },
-    { model: 'gemini-2.5-flash', api: 'v1beta' },
+    { model: 'gemini-2.5-flash',      api: 'v1beta' },
     { model: 'gemini-2.0-flash-lite', api: 'v1beta' },
-    { model: 'gemini-2.0-flash', api: 'v1beta' },
+    { model: 'gemini-2.0-flash',      api: 'v1beta' },
   ],
 
   /**
@@ -278,7 +283,7 @@ const GeminiClient = {
       generationConfig: {
         temperature: 0.1,
         topP: 0.8,
-        maxOutputTokens: 4096,
+        maxOutputTokens: 2048,  // 薬歴SOAPは長文不要。コスト最適化
         responseMimeType: "application/json"
       }
     };
@@ -312,24 +317,8 @@ const GeminiClient = {
       }
     }
 
-    // 最終手段: 30秒待って最初のモデルでリトライ
-    if (statusEl) {
-      for (let sec = 30; sec > 0; sec--) {
-        statusEl.textContent = `全モデル制限中...${sec}秒後に最終リトライ`;
-        await new Promise(r => setTimeout(r, 1000));
-      }
-    }
-    
-    for (const cfg of this.MODEL_CONFIGS) {
-      try {
-        if (statusEl) statusEl.textContent = `${cfg.model} で最終リトライ中...`;
-        return await this._callAPI(cfg.model, cfg.api, apiKey, requestBody);
-      } catch (e) {
-        continue;
-      }
-    }
-
-    throw new Error(`全モデルで生成に失敗しました。しばらく時間をおいてお試しください。\n${errors.slice(0, 3).join('\n')}`);
+    // 2モデルすべてが失敗した場合は即エラー（無限リトライによる課金防止）
+    throw new Error(`SOAP生成に失敗しました。しばらく時間をおいてお試しください。\n${errors.join('\n')}`);
   },
 
   /**
@@ -364,7 +353,6 @@ const GeminiClient = {
       // 前の行が存在し、かつ現在行が一般名語尾パターンにマッチする場合のみ除去候補
       const isGenericSuffix = /塩酸塩|硫酸塩|硝酸塩|酒石酸塩|フマル酸塩|マレイン酸塩|クエン酸塩|リン酸塩|ナトリウム|カリウム|カルシウム|マグネシウム|水和物|無水物|エステル/.test(line);
       const endsWithDosageForm = /(?:配合錠|配合散|配合顆粒|配合液|配合点眼液|配合カプセル|配合注射液)$/.test(line.replace(/[\s\u3000]/g, ''));
-      const hasFullWidthOnlyAndForm = /^[\u3000-\u9FFF\uFF00-\uFFEF\s]+$/.test(line);
 
       if (prevLine && (isGenericSuffix || endsWithDosageForm)) {
         // 前行が商品名らしい場合のみ除去（単独の一般名薬は保護）
@@ -624,16 +612,16 @@ ${transcript}
       }
     };
 
-    // 複数モデルフォールバック
-    for (let i = 0; i < this.MODEL_CONFIGS.length; i++) {
-      const cfg = this.MODEL_CONFIGS[i];
+    // 文字起こしは4モデルフォールバック（TRANSCRIBE_CONFIGS使用）
+    for (let i = 0; i < this.TRANSCRIBE_CONFIGS.length; i++) {
+      const cfg = this.TRANSCRIBE_CONFIGS[i];
       try {
         const text = await this._callAPIRaw(cfg.model, cfg.api, apiKey, requestBody);
         console.log(`[Gemini] ✅ Transcription via ${cfg.model}: ${text.length} chars`);
         return text;
       } catch (err) {
         console.warn(`[Gemini] Transcription ${cfg.model} failed:`, err.message);
-        if (i < this.MODEL_CONFIGS.length - 1) {
+        if (i < this.TRANSCRIBE_CONFIGS.length - 1) {
           await new Promise(r => setTimeout(r, 1500));
         }
       }
