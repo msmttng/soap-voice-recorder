@@ -1,4 +1,4 @@
-// SOAP Voice Recorder App
+﻿// SOAP Voice Recorder App
 
 // ==============================================
 // ログ管理
@@ -330,15 +330,6 @@ const GeminiClient = {
    */
   _filterGenericDrugNames(drugInfo) {
     if (!drugInfo?.trim()) return drugInfo;
-
-    // 一般名・成分名として高頻度で使われる語尾パターン
-    const genericSuffixPattern = /(
-      塩酸塩|硫酸塩|硝酸塩|酒石酸塩|フマル酸塩|マレイン酸塩|クエン酸塩|リン酸塩|
-      ナトリウム|カリウム|カルシウム|マグネシウム|亜鉛|鉄|アルミニウム|
-      水和物|無水物|一水和物|三水和物|
-      配合錠$|配合散$|配合顆粒$|配合液$|配合点眼液$|配合カプセル$|配合注射液$|
-      エステル|プロドラッグ
-    )/x;
 
     // 商品名を示す可能性が高いパターン（あれば前行は商品名と判断）
     const brandNamePattern = /[「」（\(]|錠\d|散\d|mg|μg|ｍｇ|μｇ|ＭＧ|AG|OD錠|DS|点眼|軟膏|クリーム|テープ|パッチ/;
@@ -2880,3 +2871,4 @@ window.addEventListener("message", (event) => {
     event.source.postMessage({ action: "autoClickResult", success: found }, event.origin);
   }
 });
+
