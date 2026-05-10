@@ -1,11 +1,34 @@
-/**
- * app.js — SOAP Voice Recorder メインアプリケーション
- * 
- * アーキテクチャ:
- *   1. Web Speech API（ブラウザ内蔵・無料）でリアルタイム文字起こし
- *   2. 文字起こしテキスト → Gemini API（テキストのみ）でSOAP生成
- *   → 音声トークンを使わないため、API制限に引っかからない
  */
+
+// ==============================================
+// ログ管理
+// ==============================================
+const Logger = {
+  logs: [],
+  maxLogs: 100,
+  log(message, type = 'info') {
+    const timestamp = new Date().toLocaleTimeString();
+    const logEntry = `[${timestamp}] [${type.toUpperCase()}] ${message}`;
+    this.logs.unshift(logEntry);
+    if (this.logs.length > this.maxLogs) this.logs.pop();
+    console.log(logEntry);
+    this.updateUI();
+  },
+  error(message, err) {
+    const detail = err ? (err.message || err) : '';
+    this.log(`${message} ${detail}`, 'error');
+  },
+  warn(message) {
+    this.log(message, 'warn');
+  },
+  getLogs() {
+    return this.logs.join('\n');
+  },
+  updateUI() {
+    const el = document.getElementById('debugLogs');
+    if (el) el.value = this.getLogs();
+  }
+};
 
 // ==============================================
 // 設定管理
@@ -19,6 +42,7 @@ const Config = {
     geminiApiKey: '',
     openaiApiKey: '',
     amivoiceApiKey: '',
+    amivoiceEngine: '-a-medical',  // 🏥 AmiVoice エンジン名（デフォルト: 医療エンジン）
     gasUrl: '',
     customVocabulary: '',
     aiProvider: 'gemini',
@@ -639,8 +663,14 @@ const AmiVoiceClient = {
     this._audioReady = false;
 
     // マイクストリーム取得
-    const constraints = { audio: deviceId ? { deviceId: { exact: deviceId } } : true };
-    this._mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
+    let constraints;
+    try {
+      constraints = { audio: deviceId ? { deviceId: { exact: deviceId } } : true };
+      this._mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
+    } catch(e) {
+      Logger.error('[AmiVoice] マイクアクセス失敗: ', e);
+      throw new Error(`マイクのアクセスに失敗しました: ${e.message}`);
+    }
 
     // AudioContext（16kHz モノラル PCM16）
     this._audioContext = new AudioContext({ sampleRate: 16000 });
@@ -669,19 +699,33 @@ const AmiVoiceClient = {
     this._processor = processor;
     this._source = source;
 
-    // 正しいエンドポイント: wss://acp-api.amivoice.com/v1/ （末尾スラッシュ必須）
+    // 正しいエンドポイント: wss://acp-api.amivoice.com/v1/nolog/ （末尾スラッシュ必須）
     // ログ保存なしにする場合: wss://acp-api.amivoice.com/v1/nolog/
+    Logger.log('[AmiVoice] Connecting to WebSocket...');
     this.ws = new WebSocket('wss://acp-api.amivoice.com/v1/nolog/');
     this.ws.binaryType = 'arraybuffer';
 
     this.ws.onopen = () => {
-      console.log('[AmiVoice] WebSocket connected');
+      Logger.log('[AmiVoice] WebSocket connected');
       // sコマンド形式: "s <codec> <grammar> authorization=<APIキー>"
-      // 医療従事者エンジン: -a-medworker（有料プランのみ）
-      // 汎用エンジン: -a-general（全プランで利用可）
-      const grammar = '-a-general'; // 無料プランの場合は -a-general
-      const cmd = `s 16K ${grammar} authorization=${appKey}`;
-      console.log('[AmiVoice] send>', cmd.replace(appKey, '***'));
+      // エンジン選択: -a-medical (医療), -a-medworker (医療従事者), -a-general (汎用)
+      const grammar = settings.amivoiceEngine || '-a-medical';
+      
+      // [DOC] 認識精度向上のための追加パラメータ
+      // keepFillerToken=1: 「えーと」等のフィラーを保持
+      // resultUpdatedInterval=1000: 途中結果の更新頻度 (ms)
+      // profileWords: カスタム辞書（ユーザー設定）を反映
+      let profileWordsParam = '';
+      if (settings.customVocabulary) {
+        const words = settings.customVocabulary.replace(/[\n\r,、]+/g, ' ').trim();
+        if (words) {
+          profileWordsParam = ` profileWords="${words.replace(/"/g, '""')}"`;
+        }
+      }
+
+      const cmd = `s 16K ${grammar} authorization=${appKey} keepFillerToken=1 resultUpdatedInterval=1000${profileWordsParam}`;
+      
+      Logger.log(`[AmiVoice] send> ${cmd.replace(appKey, '***')}`);
       this.ws.send(cmd);
       this._emitStatus('listening', 'AmiVoice 接続中...');
     };
@@ -695,14 +739,16 @@ const AmiVoiceClient = {
 
       switch (eventType) {
         case 's':
-          // sコマンド応答: スペースなし = 成功 / スペースあり = エラーメッセージ
+          // sコマンド応答: content が空なら成功。エラー時はエラーメッセージが入る
           if (content === '') {
             this._audioReady = true;
             this._emitStatus('listening', 'AmiVoice 認識中 🎤');
-            console.log('[AmiVoice] ✅ Session started — streaming audio');
+            Logger.log('[AmiVoice] ✅ Session started — streaming audio');
           } else {
-            console.error('[AmiVoice] s command error:', content);
+            Logger.error('[AmiVoice] s command error details:', content);
             this._emitStatus('error', `AmiVoice開始エラー: ${content}`);
+            // 致命的なエラー（認証失敗等）の場合は接続を閉じる
+            if (this.ws) this.ws.close();
           }
           break;
         case 'U': // 途中結果
@@ -719,16 +765,25 @@ const AmiVoiceClient = {
             const text = a.text || '';
             if (text) {
               this.fullTranscript += text;
-              console.log('[AmiVoice] ✅ Final:', text);
+              Logger.log(`[AmiVoice] ✅ Final: ${text}`);
               if (this.onUpdate) this.onUpdate(this.fullTranscript, '');
             }
           } catch(e) {}
           break;
-        case 'e': // eコマンド応答 → セッション終了
-          console.log('[AmiVoice] Session ended by server');
+        case 'e': // eコマンド応答 → 全ての結果が送信された後のセッション終了
+          Logger.log('[AmiVoice] Session ended by server — closing WebSocket');
+          if (this._stopTimer) { clearTimeout(this._stopTimer); this._stopTimer = null; }
+          if (this.ws) {
+            this.ws.close();
+            this.ws = null;
+          }
+          if (this._onStopResolve) {
+            this._onStopResolve(this.fullTranscript);
+            this._onStopResolve = null;
+          }
           break;
         case 'G': case 'S': case 'E': case 'C':
-          // 状態イベント（無視）
+          // 状態イベント
           break;
         default:
           console.log('[AmiVoice] unknown event:', data.substring(0, 80));
@@ -736,15 +791,24 @@ const AmiVoiceClient = {
     };
 
     this.ws.onerror = (e) => {
-      console.error('[AmiVoice] WebSocket error:', e);
-      this._emitStatus('error', 'AmiVoice接続エラー');
+      const errDetail = { type: e.type, isTrusted: e.isTrusted };
+      Logger.error(`[AmiVoice] WebSocket error event: ${JSON.stringify(errDetail)}`);
+      this._emitStatus('error', 'AmiVoice接続エラー (ネットワークやAPIキーを確認してください)');
     };
 
     this.ws.onclose = (e) => {
-      console.log('[AmiVoice] WebSocket closed:', e.code, e.reason);
+      Logger.log(`[AmiVoice] WebSocket closed: code=${e.code} reason=${e.reason || 'none'} wasClean=${e.wasClean}`);
       this._audioReady = false;
+      this.ws = null;
+      if (this._onStopResolve) {
+        this._onStopResolve(this.fullTranscript);
+        this._onStopResolve = null;
+      }
       if (this.isListening) {
         this._emitStatus('stopped', `AmiVoice接続が切れました (code:${e.code})`);
+        if (e.code !== 1000 && e.code !== 1005) {
+          Logger.error(`[AmiVoice] 異常切断: code=${e.code} reason=${e.reason || 'none'}`);
+        }
       }
     };
   },
@@ -753,28 +817,99 @@ const AmiVoiceClient = {
    * 認識停止 → 最終テキストを返す
    */
   stop() {
-    this.isListening = false;
-    this._audioReady = false;
+    return new Promise((resolve) => {
+      this.isListening = false;
+      this._audioReady = false;
 
-    // 音声パイプライン解体
-    if (this._processor) { try { this._processor.disconnect(); } catch(e) {} this._processor = null; }
-    if (this._source)    { try { this._source.disconnect(); }    catch(e) {} this._source = null; }
-    if (this._audioContext) { try { this._audioContext.close(); } catch(e) {} this._audioContext = null; }
-    if (this._mediaStream) {
-      this._mediaStream.getTracks().forEach(t => t.stop());
-      this._mediaStream = null;
-    }
+      // 音声パイプライン解体
+      if (this._processor) { try { this._processor.disconnect(); } catch(e) {} this._processor = null; }
+      if (this._source)    { try { this._source.disconnect(); }    catch(e) {} this._source = null; }
+      if (this._audioContext) { try { this._audioContext.close(); } catch(e) {} this._audioContext = null; }
+      if (this._mediaStream) {
+        this._mediaStream.getTracks().forEach(t => t.stop());
+        this._mediaStream = null;
+      }
 
-    // eコマンド送信 → WebSocket切断
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      try { this.ws.send('e'); } catch(err) {}
-      setTimeout(() => { try { this.ws.close(); } catch(err) {} }, 1000);
-    }
-    this.ws = null;
+      // eコマンド送信（セッション終了リクエスト）
+      if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+        try { 
+          console.log('[AmiVoice] send> e');
+          this.ws.send('e'); 
+        } catch(err) {}
+        
+        this._onStopResolve = resolve;
 
-    this._emitStatus('stopped', 'AmiVoice 停止');
-    console.log('[AmiVoice] Stopped. transcript:', this.fullTranscript.length, 'chars');
-    return this.fullTranscript;
+        // [DOC] 全ての結果を受信し終えるために 'e' レスポンスを待ってから close するのが推奨
+        // ただし、ネットワーク不調等で応答がない場合に備え、タイムアウトを設定する
+        this._stopTimer = setTimeout(() => {
+          if (this.ws) {
+            console.warn('[AmiVoice] Force closing WebSocket due to stop timeout');
+            try { this.ws.close(); } catch(err) {}
+            this.ws = null;
+          }
+          if (this._onStopResolve) {
+            this._onStopResolve(this.fullTranscript);
+            this._onStopResolve = null;
+          }
+        }, 5000);
+      } else {
+        this.ws = null;
+        resolve(this.fullTranscript);
+      }
+
+      this._emitStatus('stopped', 'AmiVoice 停止');
+      console.log('[AmiVoice] Stopped. transcript:', this.fullTranscript.length, 'chars');
+    });
+  },
+
+  /**
+   * 接続テスト用
+   */
+  async testConnection() {
+    const settings = Config.load();
+    const appKey = settings.amivoiceApiKey;
+    if (!appKey) throw new Error('AmiVoice APIキーが設定されていません');
+
+    return new Promise((resolve, reject) => {
+      const ws = new WebSocket('wss://acp-api.amivoice.com/v1/nolog/');
+      const timeout = setTimeout(() => {
+        ws.close();
+        reject(new Error('AmiVoice 接続タイムアウト'));
+      }, 5000);
+
+      ws.onopen = () => {
+        const grammar = settings.amivoiceEngine || '-a-medical';
+        ws.send(`s 16K ${grammar} authorization=${appKey}`);
+      };
+
+      ws.onmessage = (event) => {
+        clearTimeout(timeout);
+        const data = event.data;
+        if (data[0] === 's') {
+          const content = data.slice(2).trim();
+          if (content === '') {
+            ws.send('e');
+            resolve(true);
+          } else {
+            reject(new Error(`AmiVoice エラー: ${content}`));
+          }
+        }
+      };
+
+      ws.onerror = (err) => {
+        clearTimeout(timeout);
+        Logger.error(`[AmiVoice Test] WebSocket error: type=${err.type}`);
+        reject(new Error('AmiVoice WebSocket 接続失敗'));
+      };
+
+      ws.onclose = (e) => {
+        clearTimeout(timeout);
+        Logger.log(`[AmiVoice Test] WebSocket closed: code=${e.code} reason=${e.reason}`);
+        if (e.code !== 1000 && e.code !== 1005) {
+          reject(new Error(`AmiVoice 切断 (code:${e.code})`));
+        }
+      };
+    });
   },
 
   getCurrentText() { return this.fullTranscript; },
@@ -998,6 +1133,13 @@ const App = {
 
     // テキスト直接入力からSOAP生成
     document.getElementById('generateFromTextBtn').addEventListener('click', () => this.generateFromText());
+
+    // デバッグログ
+    document.getElementById('copyLogsBtn').addEventListener('click', () => {
+      const logs = Logger.getLogs();
+      navigator.clipboard.writeText(logs);
+      this.toast('📋 ログをコピーしました');
+    });
   },
 
   // --- タブ切り替え ---
@@ -1161,7 +1303,7 @@ const App = {
       // 🏥 AmiVoice WebSocket 停止して結果取得
       document.getElementById('yakurekiTranscriptText').innerHTML =
         '⏳ AmiVoice 認識結果を取得中...';
-      speechText = AmiVoiceClient.stop();
+      speechText = await AmiVoiceClient.stop();
       if (speechText) {
         document.getElementById('yakurekiTranscriptText').textContent = speechText;
       } else if (recording && recording.blob && recording.blob.size > 0) {
@@ -1890,7 +2032,7 @@ ${transcript}`;
         // 🏥 AmiVoice WebSocket を停止して最終テキストを取得
         document.getElementById('liveTranscriptText').innerHTML =
           '⏳ AmiVoice 認識結果を取得中...';
-        transcript = AmiVoiceClient.stop();
+        transcript = await AmiVoiceClient.stop();
         console.log(`[App] AmiVoice transcript: ${transcript.length} chars`);
 
         // visibilitychange リスナー解除
@@ -1903,7 +2045,7 @@ ${transcript}`;
         if (!transcript && recording && recording.blob && recording.blob.size > 0) {
           this.toast('⚠️ AmiVoice未取得 → Geminiで文字起こし中...', 'error');
           document.getElementById('liveTranscriptText').innerHTML =
-            '⏳ Gemini で音声を文字起こし中（フォールバック）...<br><span style="font-size:12px; color:var(--text-muted)">AmiVoice WebSocket未接続のためGeminiを使用</span>';
+            '⏳ Gemini で音声を文字起こし中（フォールバック）...<br><span style="font-size:12px; color:var(--text-muted)">AmiVoiceからの結果がなかったためGeminiを使用</span>';
           try {
             transcript = await GeminiClient.transcribeAudio(recording.blob, recording.mimeType, drugInfo);
             console.log(`[App] AmiVoice fallback (Gemini): ${transcript.length} chars`);
@@ -2404,6 +2546,9 @@ ${transcript}`;
     if (document.getElementById('amivoiceApiKey')) {
       document.getElementById('amivoiceApiKey').value = settings.amivoiceApiKey || '';
     }
+    if (document.getElementById('amivoiceEngine')) {
+      document.getElementById('amivoiceEngine').value = settings.amivoiceEngine || '-a-medical';
+    }
     document.getElementById('gasUrl').value = settings.gasUrl || '';
     if (document.getElementById('customVocabulary')) {
       document.getElementById('customVocabulary').value = settings.customVocabulary || '';
@@ -2434,6 +2579,7 @@ ${transcript}`;
       geminiApiKey: document.getElementById('geminiApiKey').value.trim(),
       openaiApiKey: document.getElementById('openaiApiKey').value.trim(),
       amivoiceApiKey: document.getElementById('amivoiceApiKey')?.value.trim() || '',
+      amivoiceEngine: document.getElementById('amivoiceEngine')?.value || '-a-medical',
       gasUrl: document.getElementById('gasUrl').value.trim(),
       customVocabulary: cvEl ? cvEl.value : '',
       aiProvider: document.querySelector('input[name="aiProvider"]:checked')?.value || 'gemini',
@@ -2469,6 +2615,18 @@ ${transcript}`;
         }
       } else {
         results.push('⚪ GAS: 未設定');
+      }
+
+      // AmiVoice テスト
+      if (settings.amivoiceApiKey) {
+        try {
+          await AmiVoiceClient.testConnection();
+          results.push('✅ AmiVoice: OK');
+        } catch (err) {
+          results.push(`❌ AmiVoice: ${err.message}`);
+        }
+      } else {
+        results.push('⚪ AmiVoice: 未設定');
       }
       
       this.toast(results.join('\n'));

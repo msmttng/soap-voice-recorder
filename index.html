@@ -348,6 +348,16 @@
             <input type="password" id="amivoiceApiKey" placeholder="AmiVoice Cloud Platform のAPIキー">
             <p class="hint">医療特化エンジン（薬品名・医療用語に最強精度）→ <a href="https://acp.amivoice.com/" target="_blank" style="color:var(--primary);">acp.amivoice.com</a> で取得</p>
           </div>
+          <div class="setting-item">
+            <label for="amivoiceEngine">AmiVoice エンジン</label>
+            <select id="amivoiceEngine" style="width:100%; padding:10px; font-size:14px; border-radius:8px; border:1px solid var(--border); background:var(--surface); color:var(--text);">
+              <option value="-a-medical">🏥 医療エンジン (-a-medical) ※推奨</option>
+              <option value="-a-medworker">👨‍⚕️ 医療従事者エンジン (-a-medworker)</option>
+              <option value="-a-general">🌍 汎用エンジン (-a-general)</option>
+              <option value="-a-business">💼 ビジネスエンジン (-a-business)</option>
+            </select>
+            <p class="hint">医療現場では「医療エンジン」または「医療従事者エンジン」が最適です。</p>
+          </div>
         </section>
 
         <section class="card settings-card">
@@ -434,6 +444,13 @@
         </section>
 
 
+        <section class="card settings-card" style="border-color: rgba(0,0,0,0.1);">
+          <h3>🛠 デバッグログ</h3>
+          <p class="hint">エラーが発生した場合、以下のログをコピーして開発者に送ってください。</p>
+          <textarea id="debugLogs" rows="8" readonly style="width:100%; background:var(--bg-input); border:1px solid rgba(0,0,0,0.08); border-radius:10px; padding:10px; color:var(--text-primary); font-family:var(--font-mono); font-size:11px; resize:vertical; margin-bottom:8px;"></textarea>
+          <button id="copyLogsBtn" class="action-btn secondary-btn" style="padding:8px; font-size:12px;">📋 ログをコピー</button>
+        </section>
+
         <button id="saveSettingsBtn" class="action-btn primary-btn">
           💾 設定を保存
         </button>
@@ -449,6 +466,6 @@
 
   <script src="recording-backup.js?v=2"></script>
   <script src="recorder.js?v=2"></script>
-  <script src="app.js?v=9"></script>
+  <script src="app.js?v=10"></script>
 </body>
 </html>
