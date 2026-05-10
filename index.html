@@ -18,7 +18,7 @@
     <header id="header">
       <div class="header-left">
         <span class="logo-icon">💊</span>
-        <h1>SOAP Recorder <span style="font-size:11px; font-weight:normal; opacity:0.6; margin-left:6px;">v1.13</span></h1>
+        <h1>SOAP Recorder <span style="font-size:11px; font-weight:normal; opacity:0.6; margin-left:6px;">v1.14</span></h1>
       </div>
       <button id="settingsBtn" class="icon-btn" aria-label="設定">
         <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/></svg>
@@ -335,17 +335,17 @@
           <h3>🔑 APIキー</h3>
           <div class="setting-item">
             <label for="geminiApiKey">Gemini API Key</label>
-            <input type="password" id="geminiApiKey" placeholder="AIza...">
+            <input type="text" id="geminiApiKey" placeholder="AIza..." style="-webkit-text-security: disc;" autocomplete="off">
             <p class="hint">Google AI Studio で取得した無料キー</p>
           </div>
           <div class="setting-item">
             <label for="openaiApiKey">OpenAI API Key（有料）</label>
-            <input type="password" id="openaiApiKey" placeholder="sk-...">
+            <input type="text" id="openaiApiKey" placeholder="sk-..." style="-webkit-text-security: disc;" autocomplete="off">
             <p class="hint">Whisper API（高精度音声認識）に使用</p>
           </div>
           <div class="setting-item">
             <label for="amivoiceApiKey">AmiVoice API Key ⭐推奨</label>
-            <input type="password" id="amivoiceApiKey" placeholder="AmiVoice Cloud Platform のAPIキー">
+            <input type="text" id="amivoiceApiKey" placeholder="AmiVoice Cloud Platform のAPIキー" style="-webkit-text-security: disc;" autocomplete="off">
             <p class="hint">医療特化エンジン（薬品名・医療用語に最強精度）→ <a href="https://acp.amivoice.com/" target="_blank" style="color:var(--primary);">acp.amivoice.com</a> で取得</p>
           </div>
           <div class="setting-item">
@@ -466,6 +466,6 @@
 
   <script src="recording-backup.js?v=2"></script>
   <script src="recorder.js?v=2"></script>
-  <script src="app.js?v=13"></script>
+  <script src="app.js?v=14"></script>
 </body>
 </html>
