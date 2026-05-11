@@ -1,4 +1,4 @@
-﻿// SOAP Voice Recorder App
+// SOAP Voice Recorder App
 
 // ==============================================
 // ログ管理
@@ -1227,6 +1227,27 @@ const App = {
       navigator.clipboard.writeText(logs);
       this.toast('📋 ログをコピーしました');
     });
+
+    // ===== 処方薬情報テキストエリア: ペースト時に一般名（2行目）を自動除去 =====
+    const drugInputEl = document.getElementById('drugInput');
+    if (drugInputEl) {
+      drugInputEl.addEventListener('paste', (e) => {
+        e.preventDefault(); // デフォルトのペーストをキャンセル
+        const pasted = (e.clipboardData || window.clipboardData).getData('text');
+        const cleaned = GeminiClient._filterGenericDrugNames(pasted);
+        // カーソル位置に挿入
+        const start = drugInputEl.selectionStart;
+        const end = drugInputEl.selectionEnd;
+        const before = drugInputEl.value.substring(0, start);
+        const after  = drugInputEl.value.substring(end);
+        drugInputEl.value = before + cleaned + after;
+        drugInputEl.selectionStart = drugInputEl.selectionEnd = start + cleaned.length;
+        drugInputEl.dispatchEvent(new Event('input', { bubbles: true }));
+        if (cleaned !== pasted.trim()) {
+          this.toast('💊 一般名を自動除去しました');
+        }
+      });
+    }
   },
 
   // --- タブ切り替え ---
