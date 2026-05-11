@@ -1,4 +1,4 @@
-// SOAP Voice Recorder App
+﻿// SOAP Voice Recorder App
 
 // ==============================================
 // ログ管理
@@ -331,42 +331,55 @@ const GeminiClient = {
   _filterGenericDrugNames(drugInfo) {
     if (!drugInfo?.trim()) return drugInfo;
 
-    // 正規化関数：全角→半角・メーカー括弧除去・スペース除去
     function normalize(str) {
       return str
         .replace(/[Ａ-Ｚａ-ｚ０-９]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0))
-        .replace(/μｇ/g, 'μg')
-        .replace(/ｍｇ/g, 'mg')
-        .replace(/ＭＧ/g, 'MG')
-        .replace(/「[^」]*」/g, '')
-        .replace(/（[^）]*）/g, '')
-        .replace(/\([^)]*\)/g, '')
+        .replace(/μｇ/g, 'μg').replace(/ｍｇ/g, 'mg').replace(/ＭＧ/g, 'MG')
+        .replace(/「[^」]*」/g, '').replace(/（[^）]*）/g, '').replace(/\([^)]*\)/g, '')
         .replace(/[\s\u3000]/g, '');
     }
 
-    const brandNamePattern = /[「」（\(]|mg|μg|ｍｇ|μｇ|ＭＧ|AG|OD錠|DS|点眼|軟膏|クリーム|テープ|パッチ/;
+    function extractDosageKey(str) {
+      const n = normalize(str);
+      const strength = (n.match(/\d+\.?\d*(mg|μg|ml|mL|g|%)/i) || [''])[0].toLowerCase();
+      const form = (n.match(/錠|カプセル|散|顆粒|軟膏|クリーム|点眼液|点鼻液|貼付|パッチ|テープ/) || [''])[0];
+      return form + strength;
+    }
 
+    const brandNamePattern = /[「」（\(]|mg|μg|ｍｇ|μｇ|ＭＧ|AG|OD錠|DS|点眼|軟膏|クリーム|テープ|パッチ/;
     const lines = drugInfo.split('\n').map(l => l.trim()).filter(l => l);
     const filtered = [];
 
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
       const prevLine = filtered.length > 0 ? filtered[filtered.length - 1] : null;
-
       let shouldRemove = false;
 
       if (prevLine) {
-        const isGenericSuffix = /塩酸塩|硫酸塩|硝酸塩|酒石酸塩|フマル酸塩|マレイン酸塩|クエン酸塩|リン酸塩|ナトリウム|カリウム|カルシウム|マグネシウム|水和物|無水物|エステル|安息香酸塩/.test(line);
-        const endsWithDosageForm = /(?:配合錠|配合散|配合顆粒|配合液|配合点眼液|配合カプセル|配合注射液)$/.test(line.replace(/[\s\u3000]/g, ''));
         const normLine = normalize(line);
         const normPrev = normalize(prevLine);
-        const isSubstringOfPrev = normLine.length > 3 && normPrev.includes(normLine) && normPrev.length > normLine.length;
 
-        if (isGenericSuffix || endsWithDosageForm || isSubstringOfPrev) {
-          const prevIsBrandLike = brandNamePattern.test(prevLine) || /[A-Za-zｦ-ﾟ]/.test(prevLine) || isSubstringOfPrev;
+        // 判定1: 化学名語尾パターン
+        const isGenericSuffix = /塩酸塩|硫酸塩|硝酸塩|酒石酸塩|フマル酸塩|マレイン酸塩|クエン酸塩|リン酸塩|ナトリウム|カリウム|カルシウム|マグネシウム|水和物|無水物|エステル|安息香酸塩/.test(line);
+
+        // 判定2: 配合剤形で終わる
+        const endsWithDosageForm = /(?:配合錠|配合散|配合顆粒|配合液|配合点眼液|配合カプセル|配合注射液)$/.test(line.replace(/[\s\u3000]/g, ''));
+
+        // 判定3: 正規化後に前行に含まれる（原文の長さで比較 ← Bug1修正）
+        const isSubstringOfPrev = normLine.length > 3
+          && normPrev.includes(normLine)
+          && prevLine.length >= line.length;
+
+        // 判定4: 同じ剤形+規格を持つ連続行 ← Bug2修正（デスロラタジン等）
+        const dosageKey = extractDosageKey(line);
+        const prevDosageKey = extractDosageKey(prevLine);
+        const hasSameDosage = dosageKey.length > 2 && dosageKey === prevDosageKey;
+
+        if (isGenericSuffix || endsWithDosageForm || isSubstringOfPrev || hasSameDosage) {
+          const prevIsBrandLike = brandNamePattern.test(prevLine) || /[A-Za-zｦ-ﾟ]/.test(prevLine) || isSubstringOfPrev || hasSameDosage;
           if (prevIsBrandLike) {
-            const reason = isSubstringOfPrev ? '前行の部分文字列' : isGenericSuffix ? '化学名語尾' : '配合剤形';
-            Logger.log(`[DrugFilter] 一般名と判定して除去 (${reason}): 「${line}」`, 'info');
+            const reason = isSubstringOfPrev ? '部分文字列' : hasSameDosage ? '同剤形規格' : isGenericSuffix ? '化学名語尾' : '配合剤形';
+            Logger.log(`[DrugFilter] 除去 (${reason}): 「${line}」`, 'info');
             shouldRemove = true;
           }
         }
@@ -2910,5 +2923,6 @@ window.addEventListener("message", (event) => {
     event.source.postMessage({ action: "autoClickResult", success: found }, event.origin);
   }
 });
+
 
 
