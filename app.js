@@ -1,4 +1,4 @@
-﻿// SOAP Voice Recorder App
+// SOAP Voice Recorder App
 
 // ==============================================
 // ログ管理
@@ -2486,7 +2486,9 @@ ${transcript}`;
         if (row && this._patientMap[row]) {
           const patient = this._patientMap[row];
           this.selectedPatient = patient;
-          document.getElementById('drugInput').value = patient.drug_summary || '';
+          // 患者選択時もフィルターを適用（ここが本来の修正箇所）
+          const rawDrugSummary = patient.drug_summary || '';
+          document.getElementById('drugInput').value = GeminiClient._filterGenericDrugNames(rawDrugSummary);
           this.toast(`👤 ${patient.name} さんを選択しました`);
         } else {
           this.selectedPatient = null;
